@@ -228,7 +228,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             if (element == null) return null
             val idx = element.jsonPrimitive.content.toIntOrNull() ?: return element.jsonPrimitive.content
             return if (idx >= 0 && idx < data.size && data[idx] is kotlinx.serialization.json.JsonPrimitive) {
-                data[idx].jsonPrimitive.contentOrNull
+                data[idx].jsonPrimitive.content
             } else null
         }
 
