@@ -25,6 +25,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import org.jsoup.Jsoup
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.security.MessageDigest
@@ -48,6 +49,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         .add("Origin", baseUrl)
         .add("Accept", "application/json")
         .add("X-Request-Lang", "en")
+        .add("X-Source", "MB_Website")
 
     private fun getToken(): String {
         val timestamp = (System.currentTimeMillis() / 1000).toString()
@@ -62,7 +64,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             .joinToString("") { "%02x".format(it) }
     }
 
-    // Popular: Global Trending
+    // Popular: High-Quality Trending API
     override fun popularAnimeRequest(page: Int): Request {
         val url = "$apiBaseUrl/wefeed-h5api-bff/subject/trending?page=$page&perPage=18"
         return GET(url, headersBuilder().add("X-Client-Token", getToken()).build())
@@ -188,48 +190,39 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val subjectId = resolver.getString(subject["subjectId"]) ?: ""
         val detailPath = java.net.URL(response.request.url.toString()).path.split("/").last { it.isNotEmpty() }
         
-        val resourceIdx = subject["resource"]?.jsonPrimitive?.content?.toIntOrNull()
+        val resourceIdx = resolver.resolve(subject["resource"])?.let { if (it is kotlinx.serialization.json.JsonPrimitive) it.content.toIntOrNull() else null }
         if (resourceIdx != null) {
-            val resourceElement = resolver.resolve(resourceIdx)
-            if (resourceElement is JsonObject) {
-                val resource = resourceElement.jsonObject
-                val seasonsIdx = resource["seasons"]?.jsonPrimitive?.content?.toIntOrNull()
-                if (seasonsIdx != null) {
-                    val seasonsElement = resolver.resolve(seasonsIdx)
-                    if (seasonsElement is JsonArray) {
-                        val seasons = seasonsElement.jsonArray
-                        val episodes = mutableListOf<SEpisode>()
+            val resource = resolver.resolveObject(resourceIdx)
+            val seasonsIdx = resource?.get("seasons")?.let { if (it is kotlinx.serialization.json.JsonPrimitive) it.content.toIntOrNull() else null }
+            if (seasonsIdx != null) {
+                val seasons = resolver.resolve(seasonsIdx)?.jsonArray
+                if (seasons != null) {
+                    val episodes = mutableListOf<SEpisode>()
+                    seasons.forEachIndexed { sIdx, sRef ->
+                        val seasonIdx = if (sRef is kotlinx.serialization.json.JsonPrimitive) sRef.jsonPrimitive.content.toIntOrNull() else null
+                        if (seasonIdx == null) return@forEachIndexed
                         
-                        seasons.forEachIndexed { sIdx, sRef ->
-                            val seasonIdx = if (sRef is kotlinx.serialization.json.JsonPrimitive) sRef.jsonPrimitive.content.toIntOrNull() else null
-                            if (seasonIdx == null) return@forEachIndexed
-                            
-                            val seasonElement = resolver.resolve(seasonIdx)
-                            if (seasonElement is JsonObject) {
-                                val season = seasonElement.jsonObject
-                                val allEpRaw = resolver.getString(season["allEp"])
-                                val allEp = allEpRaw?.split(",")?.size ?: resolver.getInt(season["maxEp"]) ?: 1
-                                val seNum = resolver.getInt(season["se"]) ?: (sIdx + 1)
-                                
-                                for (i in 1..allEp) {
-                                    episodes.add(SEpisode.create().apply {
-                                        name = "Season $seNum - Episode $i"
-                                        episode_number = i.toFloat()
-                                        // Store key info in URL for videoListRequest
-                                        url = "$subjectId&se=$seNum&ep=$i&detailPath=$detailPath"
-                                        date_upload = System.currentTimeMillis()
-                                    })
-                                }
-                            }
+                        val season = resolver.resolveObject(seasonIdx) ?: return@forEachIndexed
+                        val allEpRaw = resolver.getString(season["allEp"])
+                        val allEp = if (allEpRaw != null && allEpRaw.isNotEmpty()) allEpRaw.split(",").size else resolver.getInt(season["maxEp"]) ?: 1
+                        val seNum = resolver.getInt(season["se"]) ?: (sIdx + 1)
+                        
+                        for (i in 1..allEp) {
+                            episodes.add(SEpisode.create().apply {
+                                name = if (allEp > 1) "Season $seNum - Episode $i" else "Season $seNum"
+                                episode_number = i.toFloat()
+                                url = "$subjectId&se=$seNum&ep=$i&detailPath=$detailPath"
+                                date_upload = System.currentTimeMillis()
+                            })
                         }
-                        return episodes.reversed()
                     }
+                    return if (episodes.isNotEmpty()) episodes.reversed() else emptyList()
                 }
             }
         }
 
         return listOf(SEpisode.create().apply {
-            name = "Movie"
+            name = "Full Movie"
             url = "$subjectId&se=0&ep=0&detailPath=$detailPath"
             date_upload = System.currentTimeMillis()
         })
@@ -245,7 +238,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val url = "$apiBaseUrl/wefeed-h5api-bff/subject/play?subjectId=$subjectId&se=$se&ep=$ep&detailPath=$detailPath"
         return GET(url, headersBuilder()
             .add("X-Client-Token", getToken())
-            .add("X-Source", "MB_Website")
             .add("X-Client-Info", """{"timezone":"${TimeZone.getDefault().id}"}""")
             .build())
     }
@@ -256,7 +248,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val data = jsonRes["data"]?.jsonObject ?: return emptyList()
         
         if (data["limited"]?.jsonPrimitive?.boolean == true) {
-            throw Exception("Content Limited: Open website to unlock.")
+            throw Exception("Limited Content: Open Website to Unlock")
         }
 
         val videos = mutableListOf<Video>()
@@ -308,12 +300,12 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     private class TypeFilter : AnimeFilter.Select<String>("Type", arrayOf(
-        "All", "Movie", "TV Series", "Animation Shows", "Cinema", "Hot Short TV", "Bollywood", "South Indian", "Hollywood", "Asian", "Bengali dub", "Hindi dub"
+        "All", "Movie", "TV Series", "Animated Series", "Cinema", "Hot Short TV", "Bollywood", "South Indian", "Hollywood", "Asian", "Bengali dub", "Hindi dub"
     )) {
         fun toId() = when (state) {
             1 -> "Movie"
             2 -> "TV Series"
-            3 -> "Animated Series" // Site uses 'Animated Series' in path but 'Animation Shows' in filter? Testing 'Animated Series'.
+            3 -> "Animated Series"
             4 -> "Cinema"
             5 -> "Hot Short TV"
             6 -> "Bollywood"
@@ -385,23 +377,34 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     override fun setupPreferenceScreen(screen: PreferenceScreen) {}
 
     private inner class NuxtResolver(val data: JsonArray) {
-        fun resolve(index: Int): JsonElement = data[index]
-        
-        fun getString(element: JsonElement?): String? {
+        fun resolve(element: JsonElement?): JsonElement? {
             if (element == null) return null
-            val idx = element.jsonPrimitive.content.toIntOrNull() ?: return element.jsonPrimitive.content
-            return if (idx >= 0 && idx < data.size && data[idx] is kotlinx.serialization.json.JsonPrimitive) {
-                data[idx].jsonPrimitive.content
-            } else null
+            if (element is kotlinx.serialization.json.JsonPrimitive && !element.isString) {
+                val idx = element.content.toIntOrNull() ?: return element
+                return if (idx >= 0 && idx < data.size) data[idx] else element
+            }
+            return element
+        }
+
+        fun resolveObject(element: JsonElement?): JsonObject? {
+            val resolved = resolve(element)
+            return if (resolved is JsonObject) resolved.jsonObject else null
+        }
+
+        fun getString(element: JsonElement?): String? {
+            val resolved = resolve(element)
+            return if (resolved is kotlinx.serialization.json.JsonPrimitive) resolved.content else null
         }
 
         fun getInt(element: JsonElement?): Int? {
-            return element?.jsonPrimitive?.content?.toIntOrNull()
+            val resolved = resolve(element)
+            return resolved?.jsonPrimitive?.content?.toIntOrNull()
         }
 
         fun findSubject(): JsonObject? {
             if (data.size < 2) return null
             
+            // Search all objects for BFF keys starting with $
             data.forEach { element ->
                 if (element is JsonObject) {
                     element.keys.filter { it.startsWith("$") }.forEach { key ->
@@ -410,20 +413,12 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                         if (bffData is JsonObject) {
                             val bffObj = bffData.jsonObject
                             if (bffObj.containsKey("subject")) {
-                                val subIdx = bffObj["subject"]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
-                                val sub = resolve(subIdx)
-                                if (sub is JsonObject) return sub.jsonObject
+                                return resolveObject(bffObj["subject"])
                             }
                             if (bffObj.containsKey("data")) {
-                                val innerDataIdx = bffObj["data"]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
-                                val innerData = resolve(innerDataIdx)
-                                if (innerData is JsonObject) {
-                                    val innerObj = innerData.jsonObject
-                                    if (innerObj.containsKey("subject")) {
-                                        val subIdx = innerObj["subject"]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
-                                        val sub = resolve(subIdx)
-                                        if (sub is JsonObject) return sub.jsonObject
-                                    }
+                                val innerData = resolveObject(bffObj["data"])
+                                if (innerData != null && innerData.containsKey("subject")) {
+                                    return resolveObject(innerData["subject"])
                                 }
                             }
                         }
