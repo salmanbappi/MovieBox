@@ -62,12 +62,12 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             .joinToString("") { "%02x".format(it) }
     }
 
-    // Popular: Using Trending Now from the Homepage
+    // Popular: Using "Popular Movie and TV Series" from the Homepage
     override fun popularAnimeRequest(page: Int): Request {
         if (page == 1) {
             return GET("$apiBaseUrl/wefeed-h5api-bff/home?host=moviebox.ph", headersBuilder().add("X-Client-Token", getToken()).build())
         }
-        // Fallback to Ranking List for pagination
+        // Fallback to Ranking List for pagination (Trending Now)
         return GET("$apiBaseUrl/wefeed-h5api-bff/ranking-list/content?id=8610422883619422240&page=$page&perPage=18", headersBuilder().add("X-Client-Token", getToken()).build())
     }
 
@@ -78,23 +78,24 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         
         val items = mutableListOf<JsonElement>()
         
-        // Handle Home API response
         if (data.containsKey("operatingList")) {
             val opList = data["operatingList"]!!.jsonArray
-            // Find "Trending Now" section
-            val trendingOp = opList.map { it.jsonObject }.find { 
+            // Find "Popular Movie and TV Series" section
+            val popularOp = opList.map { it.jsonObject }.find { 
                 val title = it["title"]?.jsonPrimitive?.content ?: ""
-                title.contains("Trending Now") || it["type"]?.jsonPrimitive?.content == "BANNER"
+                title.contains("Popular Movie and TV Series")
+            } ?: opList.map { it.jsonObject }.find { 
+                it["type"]?.jsonPrimitive?.content == "BANNER" 
             }
-            if (trendingOp != null) {
-                if (trendingOp["type"]?.jsonPrimitive?.content == "BANNER") {
-                    trendingOp["banner"]?.jsonObject?.get("items")?.jsonArray?.let { items.addAll(it) }
+            
+            if (popularOp != null) {
+                if (popularOp["type"]?.jsonPrimitive?.content == "BANNER") {
+                    popularOp["banner"]?.jsonObject?.get("items")?.jsonArray?.let { items.addAll(it) }
                 } else {
-                    trendingOp["subjects"]?.jsonArray?.let { items.addAll(it) }
+                    popularOp["subjects"]?.jsonArray?.let { items.addAll(it) }
                 }
             }
         } else {
-            // Handle Ranking List or Search API response
             data["items"]?.jsonArray?.let { items.addAll(it) }
             data["subjectList"]?.jsonArray?.let { items.addAll(it) }
         }
@@ -117,7 +118,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         return AnimesPage(animes, hasMore)
     }
 
-    // Latest: Filtered Latest
+    // Latest
     override fun latestUpdatesRequest(page: Int): Request {
         val body = """{"page": $page, "perPage": 18, "sort": "LATEST"}""".toRequestBody("application/json".toMediaType())
         return POST("$apiBaseUrl/wefeed-h5api-bff/subject/filter", headersBuilder().add("X-Client-Token", getToken()).build(), body)
@@ -224,7 +225,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                                     episodes.add(SEpisode.create().apply {
                                         name = "$seName - Episode $i"
                                         episode_number = i.toFloat()
-                                        // RELATIVE PATH to fix moviebox.phhttps
                                         url = response.request.url.encodedPath
                                         date_upload = System.currentTimeMillis()
                                     })
@@ -387,13 +387,11 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         fun findSubject(): JsonObject? {
             if (data.size < 2) return null
             
-            // Nuxt data usually has the actual state inside an object at an early index
-            // We search for anything that looks like BFF response ($...)
-            
             data.forEach { element ->
                 if (element is JsonObject) {
-                    element.keys.filter { it.startsWith("$") }.forEach { key ->
-                        val bffIdx = element[key]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
+                    val obj = element.jsonObject
+                    obj.keys.filter { it.startsWith("$") }.forEach { key ->
+                        val bffIdx = obj[key]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
                         val bffData = if (bffIdx >= 0 && bffIdx < data.size) resolve(bffIdx) else null
                         if (bffData is JsonObject) {
                             val bffObj = bffData.jsonObject
