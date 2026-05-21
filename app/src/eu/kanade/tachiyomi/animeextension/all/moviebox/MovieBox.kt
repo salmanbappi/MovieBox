@@ -36,7 +36,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     override val baseUrl = "https://moviebox.ph"
     override val lang = "all"
     override val supportsLatest = true
-    override val id: Long = 7181466391484419848L
+    override val id: Long = 3508466391484419848L
 
     private val apiBaseUrl = "https://h5-api.aoneroom.com"
 
