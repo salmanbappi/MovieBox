@@ -1,7 +1,7 @@
 ext {
     extName = 'MovieBox'
     extClass = '.MovieBox'
-    extVersionCode = 1
+    extVersionCode = 2
     baseUrl = 'https://moviebox.ph'
 }
 
