@@ -215,10 +215,16 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val detailPath = parts.find { it.startsWith("detailPath=") }?.split("=")?.get(1) ?: ""
         
         val url = "$playApiBaseUrl/wefeed-h5api-bff/subject/play?subjectId=$subjectId&se=$se&ep=$ep&detailPath=$detailPath"
-        return GET(url, headersBuilder()
-            .add("X-Client-Token", getToken())
+        val referer = "$playApiBaseUrl/spa/videoPlayPage/movies/$detailPath?id=$subjectId&type=/movie/detail&detailSe=$se&detailEp=$ep&lang=en"
+        val playHeaders = Headers.Builder()
+            .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .add("Accept", "application/json")
+            .add("Origin", playApiBaseUrl)
+            .add("Referer", referer)
+            .add("X-Source", "mb_call_hola")
             .add("X-Client-Info", """{"timezone":"${TimeZone.getDefault().id}"}""")
-            .build())
+            .build()
+        return GET(url, playHeaders)
     }
 
     override fun videoListParse(response: Response): List<Video> {
