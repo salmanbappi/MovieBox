@@ -25,6 +25,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import org.jsoup.Jsoup
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.security.MessageDigest
@@ -61,10 +62,10 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             .joinToString("") { "%02x".format(it) }
     }
 
-    // Popular: Using Trending Now ranking list by default
+    // Popular: Trending Now
     override fun popularAnimeRequest(page: Int): Request {
-        val url = "$apiBaseUrl/wefeed-h5api-bff/ranking-list/content?id=8610422883619422240&page=$page&perPage=18"
-        return GET(url, headersBuilder().add("X-Client-Token", getToken()).build())
+        val body = """{"page": $page, "perPage": 18, "sort": "POPULAR"}""".toRequestBody("application/json".toMediaType())
+        return POST("$apiBaseUrl/wefeed-h5api-bff/subject/filter", headersBuilder().add("X-Client-Token", getToken()).build(), body)
     }
 
     override fun popularAnimeParse(response: Response): AnimesPage {
@@ -85,7 +86,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         return AnimesPage(animes, hasMore)
     }
 
-    // Latest: Using filter with LATEST sort
+    // Latest
     override fun latestUpdatesRequest(page: Int): Request {
         val body = """{"page": $page, "perPage": 18, "sort": "LATEST"}""".toRequestBody("application/json".toMediaType())
         return POST("$apiBaseUrl/wefeed-h5api-bff/subject/filter", headersBuilder().add("X-Client-Token", getToken()).build(), body)
@@ -104,21 +105,34 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
         val typeFilter = filters.find { it is TypeFilter } as? TypeFilter
         val sortFilter = filters.find { it is SortFilter } as? SortFilter
+        val genreFilter = filters.find { it is GenreFilter } as? GenreFilter
+        val yearFilter = filters.find { it is YearFilter } as? YearFilter
+        val countryFilter = filters.find { it is CountryFilter } as? CountryFilter
         
-        val body = JsonObject(mutableMapOf(
+        val bodyMap = mutableMapOf<String, JsonElement>(
             "keyword" to kotlinx.serialization.json.JsonPrimitive(query),
             "page" to kotlinx.serialization.json.JsonPrimitive(page),
             "perPage" to kotlinx.serialization.json.JsonPrimitive(18)
-        ).apply {
-            if (typeFilter != null && typeFilter.state > 0) {
-                put("subjectType", kotlinx.serialization.json.JsonPrimitive(typeFilter.toId()))
-            }
-            if (sortFilter != null) {
-                put("sort", kotlinx.serialization.json.JsonPrimitive(sortFilter.toId()))
-            }
-        }).toString().toRequestBody("application/json".toMediaType())
-        
-        return POST("$apiBaseUrl/wefeed-h5api-bff/subject/search", headersBuilder().add("X-Client-Token", getToken()).build(), body)
+        )
+
+        if (typeFilter != null && typeFilter.state > 0) {
+            bodyMap["classify"] = kotlinx.serialization.json.JsonPrimitive(typeFilter.toId())
+        }
+        if (sortFilter != null) {
+            bodyMap["sort"] = kotlinx.serialization.json.JsonPrimitive(sortFilter.toId())
+        }
+        if (genreFilter != null && genreFilter.state > 0) {
+            bodyMap["genre"] = kotlinx.serialization.json.JsonPrimitive(genreFilter.toId())
+        }
+        if (yearFilter != null && yearFilter.state > 0) {
+            bodyMap["year"] = kotlinx.serialization.json.JsonPrimitive(yearFilter.toId())
+        }
+        if (countryFilter != null && countryFilter.state > 0) {
+            bodyMap["country"] = kotlinx.serialization.json.JsonPrimitive(countryFilter.toId())
+        }
+
+        val body = JsonObject(bodyMap).toString().toRequestBody("application/json".toMediaType())
+        return POST("$apiBaseUrl/wefeed-h5api-bff/subject/filter", headersBuilder().add("X-Client-Token", getToken()).build(), body)
     }
 
     override fun searchAnimeParse(response: Response): AnimesPage = popularAnimeParse(response)
@@ -239,6 +253,10 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     override fun getFilterList(): AnimeFilterList = AnimeFilterList(
         SortFilter(),
         TypeFilter(),
+        GenreFilter(),
+        YearFilter(),
+        CountryFilter(),
+        AnimeFilter.Separator(),
         RankingFilter()
     )
 
@@ -250,24 +268,38 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         }
     }
 
-    private class TypeFilter : AnimeFilter.Select<String>("Type", arrayOf("All", "Movie", "TV Series", "Animation Shows")) {
+    private class TypeFilter : AnimeFilter.Select<String>("Type", arrayOf("All", "Movie", "TV Series", "Animation Shows", "Bengali dub", "Hindi dub")) {
         fun toId() = when (state) {
-            1 -> 1 // Movie
-            2 -> 2 // TV Series
-            3 -> 2 // Animation (Also Type 2 usually)
-            else -> 0
+            1 -> "Movie"
+            2 -> "TV Series"
+            3 -> "Animation Shows"
+            4 -> "Bengali dub"
+            5 -> "Hindi dub"
+            else -> "All"
         }
     }
 
-    private class RankingFilter : AnimeFilter.Select<String>("Ranking List", arrayOf(
+    private class GenreFilter : AnimeFilter.Select<String>("Genre", arrayOf(
+        "All", "Action", "Adventure", "Comedy", "Crime", "Drama", "Fantasy", "Horror", "Mystery", "Romance", "Sci-Fi", "Thriller", "War", "Western", "Animation", "Biography", "Documentary", "Family", "History", "Music", "Musical", "Sport"
+    )) {
+        fun toId() = if (state == 0) "All" else values[state]
+    }
+
+    private class YearFilter : AnimeFilter.Select<String>("Year", arrayOf("All") + (2026 downTo 1990).map { it.toString() }.toTypedArray()) {
+        fun toId() = if (state == 0) "All" else values[state]
+    }
+
+    private class CountryFilter : AnimeFilter.Select<String>("Country", arrayOf("All", "United States", "India", "China", "Korea", "Japan", "United Kingdom", "France", "Germany", "Canada", "Spain", "Italy", "Turkey")) {
+        fun toId() = if (state == 0) "All" else values[state]
+    }
+
+    private class RankingFilter : AnimeFilter.Select<String>("Ranking List (Search only)", arrayOf(
         "None",
         "Trending Now",
         "Cinema",
         "Bollywood",
         "Hollywood",
         "South Indian",
-        "Trending Bengali Movies",
-        "Trending Bengali TV",
         "Asian",
         "Top Series This Week",
         "Anime",
@@ -318,27 +350,33 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
         fun findSubject(): JsonObject? {
             if (data.size < 2) return null
-            val state = data[1].jsonObject
             
-            state.keys.filter { it.startsWith("$") }.forEach { key ->
-                val bffIdx = state[key]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
-                val bffData = resolve(bffIdx)
-                if (bffData is JsonObject) {
-                    val bffObj = bffData.jsonObject
-                    if (bffObj.containsKey("subject")) {
-                        val subIdx = bffObj["subject"]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
-                        val sub = resolve(subIdx)
-                        if (sub is JsonObject) return sub.jsonObject
-                    }
-                    if (bffObj.containsKey("data")) {
-                        val innerDataIdx = bffObj["data"]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
-                        val innerData = resolve(innerDataIdx)
-                        if (innerData is JsonObject) {
-                            val innerObj = innerData.jsonObject
-                            if (innerObj.containsKey("subject")) {
-                                val subIdx = innerObj["subject"]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
+            // Nuxt data usually has the actual state inside an object at an early index
+            // We search for anything that looks like BFF response ($...)
+            
+            data.forEach { element ->
+                if (element is JsonObject) {
+                    element.keys.filter { it.startsWith("$") }.forEach { key ->
+                        val bffIdx = element[key]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
+                        val bffData = if (bffIdx >= 0 && bffIdx < data.size) resolve(bffIdx) else null
+                        if (bffData is JsonObject) {
+                            val bffObj = bffData.jsonObject
+                            if (bffObj.containsKey("subject")) {
+                                val subIdx = bffObj["subject"]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
                                 val sub = resolve(subIdx)
                                 if (sub is JsonObject) return sub.jsonObject
+                            }
+                            if (bffObj.containsKey("data")) {
+                                val innerDataIdx = bffObj["data"]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
+                                val innerData = resolve(innerDataIdx)
+                                if (innerData is JsonObject) {
+                                    val innerObj = innerData.jsonObject
+                                    if (innerObj.containsKey("subject")) {
+                                        val subIdx = innerObj["subject"]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
+                                        val sub = resolve(subIdx)
+                                        if (sub is JsonObject) return sub.jsonObject
+                                    }
+                                }
                             }
                         }
                     }
