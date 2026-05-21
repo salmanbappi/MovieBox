@@ -1,0 +1,38 @@
+ext {
+    extName = 'MovieBox'
+    extClass = '.MovieBox'
+    extVersionCode = 1
+    baseUrl = 'https://moviebox.ph'
+}
+
+apply from: "../common.gradle"
+
+android {
+    defaultConfig {
+        manifestPlaceholders += [
+            author: "salmanbappi"
+        ]
+    }
+
+    signingConfigs {
+        release {
+            storeFile file("../keystore.jks")
+            storePassword "ftpbd123"
+            keyAlias "dflix"
+            keyPassword "ftpbd123"
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+        }
+    }
+}
+
+dependencies {
+    implementation project(":core")
+    
+    compileOnly libs.bundles.provided
+    compileOnly libs.bundles.common
+}
