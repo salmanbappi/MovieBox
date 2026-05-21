@@ -62,27 +62,58 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             .joinToString("") { "%02x".format(it) }
     }
 
-    // Popular: Trending Now
+    // Popular: Using Trending Now from the Homepage
     override fun popularAnimeRequest(page: Int): Request {
-        val url = "$apiBaseUrl/wefeed-h5api-bff/ranking-list/content?id=8610422883619422240&page=$page&perPage=18"
-        return GET(url, headersBuilder().add("X-Client-Token", getToken()).build())
+        if (page == 1) {
+            return GET("$apiBaseUrl/wefeed-h5api-bff/home?host=moviebox.ph", headersBuilder().add("X-Client-Token", getToken()).build())
+        }
+        // Fallback to Ranking List for pagination
+        return GET("$apiBaseUrl/wefeed-h5api-bff/ranking-list/content?id=8610422883619422240&page=$page&perPage=18", headersBuilder().add("X-Client-Token", getToken()).build())
     }
 
     override fun popularAnimeParse(response: Response): AnimesPage {
         val bodyString = response.body.string()
-        val data = json.parseToJsonElement(bodyString).jsonObject["data"]?.jsonObject ?: return AnimesPage(emptyList(), false)
-        val items = data["items"]?.jsonArray ?: data["subjectList"]?.jsonArray ?: return AnimesPage(emptyList(), false)
+        val jsonRes = json.parseToJsonElement(bodyString).jsonObject
+        val data = jsonRes["data"]?.jsonObject ?: return AnimesPage(emptyList(), false)
         
-        val animes = items.map { item ->
+        val items = mutableListOf<JsonElement>()
+        
+        // Handle Home API response
+        if (data.containsKey("operatingList")) {
+            val opList = data["operatingList"]!!.jsonArray
+            // Find "Trending Now" section
+            val trendingOp = opList.map { it.jsonObject }.find { 
+                val title = it["title"]?.jsonPrimitive?.content ?: ""
+                title.contains("Trending Now") || it["type"]?.jsonPrimitive?.content == "BANNER"
+            }
+            if (trendingOp != null) {
+                if (trendingOp["type"]?.jsonPrimitive?.content == "BANNER") {
+                    trendingOp["banner"]?.jsonObject?.get("items")?.jsonArray?.let { items.addAll(it) }
+                } else {
+                    trendingOp["subjects"]?.jsonArray?.let { items.addAll(it) }
+                }
+            }
+        } else {
+            // Handle Ranking List or Search API response
+            data["items"]?.jsonArray?.let { items.addAll(it) }
+            data["subjectList"]?.jsonArray?.let { items.addAll(it) }
+        }
+
+        val animes = items.mapNotNull { item ->
             val obj = item.jsonObject
+            val subject = if (obj.containsKey("subject")) obj["subject"]?.jsonObject else obj
+            if (subject == null) return@mapNotNull null
+            
             SAnime.create().apply {
-                title = obj["title"]?.jsonPrimitive?.content ?: ""
-                url = "/detail/" + (obj["detailPath"]?.jsonPrimitive?.content ?: "")
-                thumbnail_url = obj["cover"]?.jsonObject?.get("url")?.jsonPrimitive?.content
+                title = subject["title"]?.jsonPrimitive?.content ?: ""
+                url = "/detail/" + (subject["detailPath"]?.jsonPrimitive?.content ?: "")
+                thumbnail_url = subject["cover"]?.jsonObject?.get("url")?.jsonPrimitive?.content
             }
         }
+        
         val hasMore = data["pager"]?.jsonObject?.get("hasMore")?.jsonPrimitive?.boolean 
-            ?: (items.size >= 12)
+            ?: (animes.size >= 12)
+            
         return AnimesPage(animes, hasMore)
     }
 
@@ -193,7 +224,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                                     episodes.add(SEpisode.create().apply {
                                         name = "$seName - Episode $i"
                                         episode_number = i.toFloat()
-                                        // MUST BE RELATIVE to fix moviebox.phhttps bug
+                                        // RELATIVE PATH to fix moviebox.phhttps
                                         url = response.request.url.encodedPath
                                         date_upload = System.currentTimeMillis()
                                     })
@@ -301,6 +332,9 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         "Bollywood",
         "Hollywood",
         "South Indian",
+        "Hot Short TV",
+        "Trending Bengali Movies",
+        "Trending Bengali TV",
         "Asian",
         "Top Series This Week",
         "Anime",
@@ -317,15 +351,18 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             3 -> "414907768299210008"
             4 -> "8019599703232971616"
             5 -> "3859721901924910512"
-            6 -> "5429170738815291968"
-            7 -> "5606549574572819920"
-            8 -> "8434602210994128512"
-            9 -> "7878715743607948784"
-            10 -> "8788126208987989488"
-            11 -> "4903182713986896328"
-            12 -> "1255898847918934600"
-            13 -> "3910636007619709856"
-            14 -> "5177200225164885656"
+            6 -> "5740267679764693592"
+            7 -> "5837669637445565960"
+            8 -> "735765054104261208"
+            9 -> "5429170738815291968"
+            10 -> "5606549574572819920"
+            11 -> "8434602210994128512"
+            12 -> "7878715743607948784"
+            13 -> "8788126208987989488"
+            14 -> "4903182713986896328"
+            15 -> "1255898847918934600"
+            16 -> "3910636007619709856"
+            17 -> "5177200225164885656"
             else -> ""
         }
     }
@@ -355,9 +392,8 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             
             data.forEach { element ->
                 if (element is JsonObject) {
-                    val obj = element.jsonObject
-                    obj.keys.filter { it.startsWith("$") }.forEach { key ->
-                        val bffIdx = obj[key]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
+                    element.keys.filter { it.startsWith("$") }.forEach { key ->
+                        val bffIdx = element[key]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
                         val bffData = if (bffIdx >= 0 && bffIdx < data.size) resolve(bffIdx) else null
                         if (bffData is JsonObject) {
                             val bffObj = bffData.jsonObject
