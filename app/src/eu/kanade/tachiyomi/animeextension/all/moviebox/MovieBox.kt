@@ -84,7 +84,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             
             SAnime.create().apply {
                 title = subject["title"]?.jsonPrimitive?.content ?: ""
-                url = "/detail/" + (subject["detailPath"]?.jsonPrimitive?.content ?: "")
+                url = "/movies/" + (subject["detailPath"]?.jsonPrimitive?.content ?: "")
                 thumbnail_url = subject["cover"]?.jsonObject?.get("url")?.jsonPrimitive?.content
             }
         }
@@ -108,7 +108,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             val obj = item.jsonObject
             SAnime.create().apply {
                 title = obj["title"]?.jsonPrimitive?.content ?: ""
-                url = "/detail/" + (obj["detailPath"]?.jsonPrimitive?.content ?: "")
+                url = "/movies/" + (obj["detailPath"]?.jsonPrimitive?.content ?: "")
                 thumbnail_url = obj["cover"]?.jsonObject?.get("url")?.jsonPrimitive?.content
             }
         }
@@ -179,53 +179,41 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     override fun episodeListParse(response: Response): List<SEpisode> {
-        val document = response.asJsoup()
-        val scriptData = document.selectFirst("script[id=__NUXT_DATA__]")?.data()
+        val detailPath = java.net.URL(response.request.url.toString()).path.split("/").lastOrNull { it.isNotEmpty() }
             ?: return emptyList()
-        
-        val nuxtData = json.parseToJsonElement(scriptData).jsonArray
-        val resolver = NuxtResolver(nuxtData)
-        val subject = resolver.findSubject() ?: return emptyList()
-        
-        val subjectId = resolver.getString(subject["subjectId"]) ?: ""
-        val detailPath = java.net.URL(response.request.url.toString()).path.split("/").last { it.isNotEmpty() }
-        
-        val resourceIdx = resolver.resolveIdx(subject["resource"])
-        if (resourceIdx != null) {
-            val resource = resolver.resolveObject(resourceIdx)
-            val seasonsIdx = resolver.resolveIdx(resource?.get("seasons"))
-            if (seasonsIdx != null) {
-                val seasons = resolver.resolve(seasonsIdx)?.jsonArray
-                if (seasons != null) {
-                    val episodes = mutableListOf<SEpisode>()
-                    seasons.forEachIndexed { sIdx, sRef ->
-                        val seasonIdx = if (sRef is kotlinx.serialization.json.JsonPrimitive) sRef.jsonPrimitive.content.toIntOrNull() else null
-                        if (seasonIdx == null) return@forEachIndexed
-                        
-                        val season = resolver.resolveObject(seasonIdx) ?: return@forEachIndexed
-                        val allEpRaw = resolver.getString(season["allEp"])
-                        val allEp = if (allEpRaw != null && allEpRaw.isNotEmpty()) allEpRaw.split(",").size else resolver.getInt(season["maxEp"]) ?: 1
-                        val seNum = resolver.getInt(season["se"]) ?: (sIdx + 1)
-                        
-                        for (i in 1..allEp) {
-                            episodes.add(SEpisode.create().apply {
-                                name = if (allEp > 1) "Season $seNum - Episode $i" else "Season $seNum"
-                                episode_number = i.toFloat()
-                                url = "$subjectId&se=$seNum&ep=$i&detailPath=$detailPath"
-                                date_upload = System.currentTimeMillis()
-                            })
-                        }
-                    }
-                    return if (episodes.isNotEmpty()) episodes.reversed() else emptyList()
+        val detailData = fetchDetailData(detailPath) ?: return emptyList()
+        val subject = detailData["subject"]?.jsonObject ?: return emptyList()
+        val subjectId = subject["subjectId"]?.jsonPrimitive?.content ?: return emptyList()
+        val subjectType = subject["subjectType"]?.jsonPrimitive?.content?.toIntOrNull() ?: 1
+        val seasons = detailData["resource"]?.jsonObject?.get("seasons")?.jsonArray
+
+        if (subjectType != 1 && !seasons.isNullOrEmpty()) {
+            val episodes = mutableListOf<SEpisode>()
+            seasons.forEach { seasonEl ->
+                val season = seasonEl.jsonObject
+                val seNum = season["se"]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
+                val allEpRaw = season["allEp"]?.jsonPrimitive?.content.orEmpty()
+                val totalEp = if (allEpRaw.isNotBlank()) allEpRaw.split(",").size else season["maxEp"]?.jsonPrimitive?.content?.toIntOrNull() ?: 1
+
+                for (i in 1..totalEp) {
+                    episodes.add(SEpisode.create().apply {
+                        name = "Season $seNum - Episode $i"
+                        episode_number = i.toFloat()
+                        url = "$subjectId&se=$seNum&ep=$i&detailPath=$detailPath"
+                        date_upload = System.currentTimeMillis()
+                    })
                 }
             }
+            if (episodes.isNotEmpty()) return episodes.reversed()
         }
 
-        return listOf(SEpisode.create().apply {
-            name = "Full Movie"
-            url = "$subjectId&se=0&ep=0&detailPath=$detailPath"
-            date_upload = System.currentTimeMillis()
-        })
+        return listOf(
+            SEpisode.create().apply {
+                name = "Full Movie"
+                url = "$subjectId&se=0&ep=0&detailPath=$detailPath"
+                date_upload = System.currentTimeMillis()
+            },
+        )
     }
 
     override fun videoListRequest(episode: SEpisode): Request {
@@ -266,8 +254,13 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             val quality = (obj["resolutions"]?.jsonPrimitive?.content ?: "Unknown") + "P"
             videos.add(Video(url, quality, url))
         }
-        
-        return videos
+
+        if (videos.isNotEmpty()) return videos
+
+        val requestUrl = response.request.url
+        val detailPath = requestUrl.queryParameter("detailPath").orEmpty()
+        if (detailPath.isBlank()) return emptyList()
+        return fallbackVideosFromWebPage(detailPath)
     }
 
     override fun List<Video>.sort(): List<Video> {
@@ -375,6 +368,42 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {}
+
+    private fun fetchDetailData(detailPath: String): JsonObject? {
+        val url = "$apiBaseUrl/wefeed-h5api-bff/detail?detailPath=$detailPath"
+        val request = GET(url, headersBuilder()
+            .add("X-Client-Token", getToken())
+            .add("X-Client-Info", """{"timezone":"${TimeZone.getDefault().id}"}""")
+            .build())
+        return client.newCall(request).execute().use { res ->
+            val body = res.body.string()
+            json.parseToJsonElement(body).jsonObject["data"]?.jsonObject
+        }
+    }
+
+    private fun fallbackVideosFromWebPage(detailPath: String): List<Video> {
+        val pageUrl = "$baseUrl/movies/$detailPath"
+        val request = GET(pageUrl, headersBuilder().build())
+        val html = client.newCall(request).execute().use { it.body.string() }
+        val doc = Jsoup.parse(html)
+        val videos = LinkedHashSet<String>()
+
+        doc.select("meta[property=og:video:url], meta[property=twitter:video], meta[name=video]")
+            .forEach { meta ->
+                val value = meta.attr("content").trim()
+                if (value.startsWith("http")) videos.add(value)
+            }
+
+        doc.select("script[type=application/ld+json]").forEach { script ->
+            val raw = script.data()
+            Regex("\"contentUrl\"\\s*:\\s*\"([^\"]+)\"").findAll(raw).forEach { match ->
+                val value = match.groupValues.getOrNull(1).orEmpty()
+                if (value.startsWith("http")) videos.add(value)
+            }
+        }
+
+        return videos.map { Video(it, "Watch Online", it) }
+    }
 
     private inner class NuxtResolver(val data: JsonArray) {
         fun resolve(element: JsonElement?): JsonElement? {
