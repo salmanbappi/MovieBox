@@ -40,6 +40,11 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     override val id: Long = 3508466391484419848L
 
     private val apiBaseUrl = "https://h5-api.aoneroom.com"
+    private val blockedKeywords = listOf(
+        "mma", "ufc", "wrestling", "boxing", "kickboxing", "muay thai", "rizin",
+        "esports", "e-sports", "gaming", "gameplay", "pubg", "free fire", "dota",
+        "league of legends", "valorant", "fifa", "fc 24",
+    )
 
     private val json: Json by lazy { Injekt.get() }
 
@@ -71,25 +76,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     override fun popularAnimeParse(response: Response): AnimesPage {
-        val bodyString = response.body.string()
-        val jsonRes = json.parseToJsonElement(bodyString).jsonObject
-        val data = jsonRes["data"]?.jsonObject ?: return AnimesPage(emptyList(), false)
-        
-        val items = data["subjectList"]?.jsonArray ?: data["items"]?.jsonArray ?: return AnimesPage(emptyList(), false)
-        
-        val animes = items.mapNotNull { item ->
-            val obj = item.jsonObject
-            val subject = if (obj.containsKey("subject")) obj["subject"]?.jsonObject else obj
-            if (subject == null) return@mapNotNull null
-            
-            SAnime.create().apply {
-                title = subject["title"]?.jsonPrimitive?.content ?: ""
-                url = "/movies/" + (subject["detailPath"]?.jsonPrimitive?.content ?: "")
-                thumbnail_url = subject["cover"]?.jsonObject?.get("url")?.jsonPrimitive?.content
-            }
-        }
-        val hasMore = data["pager"]?.jsonObject?.get("hasMore")?.jsonPrimitive?.boolean ?: (animes.size >= 12)
-        return AnimesPage(animes, hasMore)
+        return parseSubjectListPage(response)
     }
 
     // Latest: Filtered Latest
@@ -99,21 +86,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     override fun latestUpdatesParse(response: Response): AnimesPage {
-        val bodyString = response.body.string()
-        val jsonRes = json.parseToJsonElement(bodyString).jsonObject
-        val data = jsonRes["data"]?.jsonObject ?: return AnimesPage(emptyList(), false)
-        val items = data["items"]?.jsonArray ?: return AnimesPage(emptyList(), false)
-        
-        val animes = items.map { item ->
-            val obj = item.jsonObject
-            SAnime.create().apply {
-                title = obj["title"]?.jsonPrimitive?.content ?: ""
-                url = "/movies/" + (obj["detailPath"]?.jsonPrimitive?.content ?: "")
-                thumbnail_url = obj["cover"]?.jsonObject?.get("url")?.jsonPrimitive?.content
-            }
-        }
-        val hasMore = data["pager"]?.jsonObject?.get("hasMore")?.jsonPrimitive?.boolean ?: (items.size >= 12)
-        return AnimesPage(animes, hasMore)
+        return parseSubjectListPage(response)
     }
 
     // Search & Filters
@@ -174,25 +147,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     override fun searchAnimeParse(response: Response): AnimesPage {
-        val bodyString = response.body.string()
-        val jsonRes = json.parseToJsonElement(bodyString).jsonObject
-        val data = jsonRes["data"]?.jsonObject ?: return AnimesPage(emptyList(), false)
-        val items = data["items"]?.jsonArray ?: data["subjectList"]?.jsonArray ?: return AnimesPage(emptyList(), false)
-
-        val animes = items.mapNotNull { item ->
-            val obj = item.jsonObject
-            val subject = if (obj.containsKey("subject")) obj["subject"]?.jsonObject else obj
-            if (subject == null) return@mapNotNull null
-
-            SAnime.create().apply {
-                title = subject["title"]?.jsonPrimitive?.content ?: ""
-                url = "/movies/" + (subject["detailPath"]?.jsonPrimitive?.content ?: "")
-                thumbnail_url = subject["cover"]?.jsonObject?.get("url")?.jsonPrimitive?.content
-            }
-        }
-
-        val hasMore = data["pager"]?.jsonObject?.get("hasMore")?.jsonPrimitive?.boolean ?: (animes.size >= 12)
-        return AnimesPage(animes, hasMore)
+        return parseSubjectListPage(response)
     }
 
     // Details
@@ -439,6 +394,48 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         }
 
         return videos.map { Video(it, "Watch Online", it) }
+    }
+
+    private fun parseSubjectListPage(response: Response): AnimesPage {
+        val bodyString = response.body.string()
+        val jsonRes = json.parseToJsonElement(bodyString).jsonObject
+        val data = jsonRes["data"]?.jsonObject ?: return AnimesPage(emptyList(), false)
+        val items = data["subjectList"]?.jsonArray ?: data["items"]?.jsonArray ?: return AnimesPage(emptyList(), false)
+
+        val animes = items.mapNotNull { item ->
+            val obj = item.jsonObject
+            val subject = if (obj.containsKey("subject")) obj["subject"]?.jsonObject else obj
+            if (subject == null || !isAllowedSubject(subject)) return@mapNotNull null
+
+            val detailPath = subject["detailPath"]?.jsonPrimitive?.content.orEmpty()
+            if (detailPath.isBlank()) return@mapNotNull null
+
+            SAnime.create().apply {
+                title = subject["title"]?.jsonPrimitive?.content ?: ""
+                url = "/movies/$detailPath"
+                thumbnail_url = subject["cover"]?.jsonObject?.get("url")?.jsonPrimitive?.content
+            }
+        }
+
+        val hasMore = data["pager"]?.jsonObject?.get("hasMore")?.jsonPrimitive?.boolean ?: (animes.size >= 12)
+        return AnimesPage(animes, hasMore)
+    }
+
+    private fun isAllowedSubject(subject: JsonObject): Boolean {
+        val subjectType = subject["subjectType"]?.jsonPrimitive?.content?.toIntOrNull()
+        if (subjectType == 9) return false // sports/fight clips (MMA/wrestling-heavy noise)
+
+        val text = buildString {
+            append(subject["title"]?.jsonPrimitive?.content.orEmpty())
+            append(' ')
+            append(subject["genre"]?.jsonPrimitive?.content.orEmpty())
+            append(' ')
+            append(subject["classify"]?.jsonPrimitive?.content.orEmpty())
+            append(' ')
+            append(subject["description"]?.jsonPrimitive?.content.orEmpty())
+        }.lowercase()
+
+        return blockedKeywords.none { text.contains(it) }
     }
 
     private inner class NuxtResolver(val data: JsonArray) {
