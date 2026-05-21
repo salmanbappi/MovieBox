@@ -25,10 +25,10 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
-import org.jsoup.Jsoup
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.security.MessageDigest
+import java.util.TimeZone
 
 class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
@@ -62,10 +62,10 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             .joinToString("") { "%02x".format(it) }
     }
 
-    // Popular: Using filter with POPULAR sort
+    // Popular: Global Trending
     override fun popularAnimeRequest(page: Int): Request {
-        val body = """{"page": $page, "perPage": 18, "sort": "POPULAR"}""".toRequestBody("application/json".toMediaType())
-        return POST("$apiBaseUrl/wefeed-h5api-bff/subject/filter", headersBuilder().add("X-Client-Token", getToken()).build(), body)
+        val url = "$apiBaseUrl/wefeed-h5api-bff/subject/trending?page=$page&perPage=18"
+        return GET(url, headersBuilder().add("X-Client-Token", getToken()).build())
     }
 
     override fun popularAnimeParse(response: Response): AnimesPage {
@@ -73,7 +73,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val jsonRes = json.parseToJsonElement(bodyString).jsonObject
         val data = jsonRes["data"]?.jsonObject ?: return AnimesPage(emptyList(), false)
         
-        val items = data["items"]?.jsonArray ?: data["subjectList"]?.jsonArray ?: return AnimesPage(emptyList(), false)
+        val items = data["subjectList"]?.jsonArray ?: data["items"]?.jsonArray ?: return AnimesPage(emptyList(), false)
         
         val animes = items.mapNotNull { item ->
             val obj = item.jsonObject
@@ -86,18 +86,33 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                 thumbnail_url = subject["cover"]?.jsonObject?.get("url")?.jsonPrimitive?.content
             }
         }
-        val hasMore = data["pager"]?.jsonObject?.get("hasMore")?.jsonPrimitive?.boolean 
-            ?: (items.size >= 12)
+        val hasMore = data["pager"]?.jsonObject?.get("hasMore")?.jsonPrimitive?.boolean ?: (animes.size >= 12)
         return AnimesPage(animes, hasMore)
     }
 
-    // Latest: Using filter with LATEST sort
+    // Latest: Filtered Latest
     override fun latestUpdatesRequest(page: Int): Request {
         val body = """{"page": $page, "perPage": 18, "sort": "LATEST"}""".toRequestBody("application/json".toMediaType())
         return POST("$apiBaseUrl/wefeed-h5api-bff/subject/filter", headersBuilder().add("X-Client-Token", getToken()).build(), body)
     }
 
-    override fun latestUpdatesParse(response: Response): AnimesPage = popularAnimeParse(response)
+    override fun latestUpdatesParse(response: Response): AnimesPage {
+        val bodyString = response.body.string()
+        val jsonRes = json.parseToJsonElement(bodyString).jsonObject
+        val data = jsonRes["data"]?.jsonObject ?: return AnimesPage(emptyList(), false)
+        val items = data["items"]?.jsonArray ?: return AnimesPage(emptyList(), false)
+        
+        val animes = items.map { item ->
+            val obj = item.jsonObject
+            SAnime.create().apply {
+                title = obj["title"]?.jsonPrimitive?.content ?: ""
+                url = "/detail/" + (obj["detailPath"]?.jsonPrimitive?.content ?: "")
+                thumbnail_url = obj["cover"]?.jsonObject?.get("url")?.jsonPrimitive?.content
+            }
+        }
+        val hasMore = data["pager"]?.jsonObject?.get("hasMore")?.jsonPrimitive?.boolean ?: (items.size >= 12)
+        return AnimesPage(animes, hasMore)
+    }
 
     // Search & Filters
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
@@ -140,7 +155,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         return POST("$apiBaseUrl/wefeed-h5api-bff/subject/filter", headersBuilder().add("X-Client-Token", getToken()).build(), body)
     }
 
-    override fun searchAnimeParse(response: Response): AnimesPage = popularAnimeParse(response)
+    override fun searchAnimeParse(response: Response): AnimesPage = latestUpdatesParse(response)
 
     // Details
     override fun animeDetailsParse(response: Response): SAnime {
@@ -150,7 +165,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         
         val nuxtData = json.parseToJsonElement(scriptData).jsonArray
         val resolver = NuxtResolver(nuxtData)
-        
         val subject = resolver.findSubject() ?: throw Exception("Subject not found in Nuxt data")
         
         return SAnime.create().apply {
@@ -169,12 +183,11 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         
         val nuxtData = json.parseToJsonElement(scriptData).jsonArray
         val resolver = NuxtResolver(nuxtData)
-        
         val subject = resolver.findSubject() ?: return emptyList()
+        
         val subjectId = resolver.getString(subject["subjectId"]) ?: ""
         val detailPath = java.net.URL(response.request.url.toString()).path.split("/").last { it.isNotEmpty() }
         
-        // Check for resource/seasons
         val resourceIdx = subject["resource"]?.jsonPrimitive?.content?.toIntOrNull()
         if (resourceIdx != null) {
             val resourceElement = resolver.resolve(resourceIdx)
@@ -202,6 +215,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                                     episodes.add(SEpisode.create().apply {
                                         name = "Season $seNum - Episode $i"
                                         episode_number = i.toFloat()
+                                        // Store key info in URL for videoListRequest
                                         url = "$subjectId&se=$seNum&ep=$i&detailPath=$detailPath"
                                         date_upload = System.currentTimeMillis()
                                     })
@@ -229,7 +243,11 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val detailPath = parts.find { it.startsWith("detailPath=") }?.split("=")?.get(1) ?: ""
         
         val url = "$apiBaseUrl/wefeed-h5api-bff/subject/play?subjectId=$subjectId&se=$se&ep=$ep&detailPath=$detailPath"
-        return GET(url, headersBuilder().add("X-Client-Token", getToken()).build())
+        return GET(url, headersBuilder()
+            .add("X-Client-Token", getToken())
+            .add("X-Source", "MB_Website")
+            .add("X-Client-Info", """{"timezone":"${TimeZone.getDefault().id}"}""")
+            .build())
     }
 
     override fun videoListParse(response: Response): List<Video> {
@@ -238,7 +256,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val data = jsonRes["data"]?.jsonObject ?: return emptyList()
         
         if (data["limited"]?.jsonPrimitive?.boolean == true) {
-            throw Exception("This content is limited. Please open the website to unlock.")
+            throw Exception("Content Limited: Open website to unlock.")
         }
 
         val videos = mutableListOf<Video>()
@@ -289,13 +307,21 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         }
     }
 
-    private class TypeFilter : AnimeFilter.Select<String>("Type", arrayOf("All", "Movie", "TV Series", "Animation Shows", "Bengali dub", "Hindi dub")) {
+    private class TypeFilter : AnimeFilter.Select<String>("Type", arrayOf(
+        "All", "Movie", "TV Series", "Animation Shows", "Cinema", "Hot Short TV", "Bollywood", "South Indian", "Hollywood", "Asian", "Bengali dub", "Hindi dub"
+    )) {
         fun toId() = when (state) {
             1 -> "Movie"
             2 -> "TV Series"
-            3 -> "Animation Shows"
-            4 -> "Bengali dub"
-            5 -> "Hindi dub"
+            3 -> "Animated Series" // Site uses 'Animated Series' in path but 'Animation Shows' in filter? Testing 'Animated Series'.
+            4 -> "Cinema"
+            5 -> "Hot Short TV"
+            6 -> "Bollywood"
+            7 -> "South Indian"
+            8 -> "Hollywood"
+            9 -> "Asian"
+            10 -> "Bengali dub"
+            11 -> "Hindi dub"
             else -> "All"
         }
     }
@@ -378,8 +404,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             
             data.forEach { element ->
                 if (element is JsonObject) {
-                    val obj = element.jsonObject
-                    obj.keys.filter { it.startsWith("$") }.forEach { key ->
+                    element.keys.filter { it.startsWith("$") }.forEach { key ->
                         val bffIdx = element[key]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
                         val bffData = if (bffIdx >= 0 && bffIdx < data.size) resolve(bffIdx) else null
                         if (bffData is JsonObject) {
