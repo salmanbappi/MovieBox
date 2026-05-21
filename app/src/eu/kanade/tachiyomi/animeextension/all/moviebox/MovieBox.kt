@@ -172,7 +172,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         
         val subject = resolver.findSubject() ?: return emptyList()
         val subjectId = resolver.getString(subject["subjectId"]) ?: ""
-        val detailPath = new java.net.URL(response.request.url.toString()).path.split("/").last { it.isNotEmpty() }
+        val detailPath = java.net.URL(response.request.url.toString()).path.split("/").last { it.isNotEmpty() }
         
         // Check for resource/seasons
         val resourceIdx = subject["resource"]?.jsonPrimitive?.content?.toIntOrNull()
