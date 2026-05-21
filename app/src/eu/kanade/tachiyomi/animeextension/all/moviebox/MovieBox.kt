@@ -64,8 +64,8 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     // Popular: Trending Now
     override fun popularAnimeRequest(page: Int): Request {
-        val body = """{"page": $page, "perPage": 18, "sort": "POPULAR"}""".toRequestBody("application/json".toMediaType())
-        return POST("$apiBaseUrl/wefeed-h5api-bff/subject/filter", headersBuilder().add("X-Client-Token", getToken()).build(), body)
+        val url = "$apiBaseUrl/wefeed-h5api-bff/ranking-list/content?id=8610422883619422240&page=$page&perPage=18"
+        return GET(url, headersBuilder().add("X-Client-Token", getToken()).build())
     }
 
     override fun popularAnimeParse(response: Response): AnimesPage {
@@ -86,7 +86,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         return AnimesPage(animes, hasMore)
     }
 
-    // Latest
+    // Latest: Filtered Latest
     override fun latestUpdatesRequest(page: Int): Request {
         val body = """{"page": $page, "perPage": 18, "sort": "LATEST"}""".toRequestBody("application/json".toMediaType())
         return POST("$apiBaseUrl/wefeed-h5api-bff/subject/filter", headersBuilder().add("X-Client-Token", getToken()).build(), body)
@@ -193,7 +193,8 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                                     episodes.add(SEpisode.create().apply {
                                         name = "$seName - Episode $i"
                                         episode_number = i.toFloat()
-                                        url = response.request.url.toString()
+                                        // MUST BE RELATIVE to fix moviebox.phhttps bug
+                                        url = response.request.url.encodedPath
                                         date_upload = System.currentTimeMillis()
                                     })
                                 }
@@ -207,7 +208,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
         return listOf(SEpisode.create().apply {
             name = "Movie"
-            url = response.request.url.toString()
+            url = response.request.url.encodedPath
             date_upload = System.currentTimeMillis()
         })
     }
@@ -316,17 +317,15 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             3 -> "414907768299210008"
             4 -> "8019599703232971616"
             5 -> "3859721901924910512"
-            6 -> "5837669637445565960"
-            7 -> "735765054104261208"
-            8 -> "5429170738815291968"
-            9 -> "5606549574572819920"
-            10 -> "8434602210994128512"
-            11 -> "7878715743607948784"
-            12 -> "8788126208987989488"
-            13 -> "4903182713986896328"
-            14 -> "1255898847918934600"
-            15 -> "3910636007619709856"
-            16 -> "5177200225164885656"
+            6 -> "5429170738815291968"
+            7 -> "5606549574572819920"
+            8 -> "8434602210994128512"
+            9 -> "7878715743607948784"
+            10 -> "8788126208987989488"
+            11 -> "4903182713986896328"
+            12 -> "1255898847918934600"
+            13 -> "3910636007619709856"
+            14 -> "5177200225164885656"
             else -> ""
         }
     }
@@ -356,8 +355,9 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             
             data.forEach { element ->
                 if (element is JsonObject) {
-                    element.keys.filter { it.startsWith("$") }.forEach { key ->
-                        val bffIdx = element[key]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
+                    val obj = element.jsonObject
+                    obj.keys.filter { it.startsWith("$") }.forEach { key ->
+                        val bffIdx = obj[key]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
                         val bffData = if (bffIdx >= 0 && bffIdx < data.size) resolve(bffIdx) else null
                         if (bffData is JsonObject) {
                             val bffObj = bffData.jsonObject
