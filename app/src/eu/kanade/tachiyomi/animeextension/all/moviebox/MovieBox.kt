@@ -25,6 +25,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import org.jsoup.Jsoup
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.security.MessageDigest
@@ -47,7 +48,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         .add("Origin", baseUrl)
         .add("Accept", "application/json")
         .add("X-Request-Lang", "en")
-        .add("X-Source", "app-search")
 
     private fun getToken(): String {
         val timestamp = (System.currentTimeMillis() / 1000).toString()
@@ -62,12 +62,10 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             .joinToString("") { "%02x".format(it) }
     }
 
-    // Popular: Trending Now
+    // Popular: Using filter with POPULAR sort
     override fun popularAnimeRequest(page: Int): Request {
-        if (page == 1) {
-            return GET("$apiBaseUrl/wefeed-h5api-bff/home?host=moviebox.ph", headersBuilder().add("X-Client-Token", getToken()).build())
-        }
-        return GET("$apiBaseUrl/wefeed-h5api-bff/ranking-list/content?id=8610422883619422240&page=$page&perPage=18", headersBuilder().add("X-Client-Token", getToken()).build())
+        val body = """{"page": $page, "perPage": 18, "sort": "POPULAR"}""".toRequestBody("application/json".toMediaType())
+        return POST("$apiBaseUrl/wefeed-h5api-bff/subject/filter", headersBuilder().add("X-Client-Token", getToken()).build(), body)
     }
 
     override fun popularAnimeParse(response: Response): AnimesPage {
@@ -75,29 +73,8 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val jsonRes = json.parseToJsonElement(bodyString).jsonObject
         val data = jsonRes["data"]?.jsonObject ?: return AnimesPage(emptyList(), false)
         
-        val items = mutableListOf<JsonElement>()
+        val items = data["items"]?.jsonArray ?: data["subjectList"]?.jsonArray ?: return AnimesPage(emptyList(), false)
         
-        if (data.containsKey("operatingList")) {
-            val opList = data["operatingList"]!!.jsonArray
-            val popularOp = opList.map { it.jsonObject }.find { 
-                val title = it["title"]?.jsonPrimitive?.content ?: ""
-                title.contains("Popular Movie and TV Series")
-            } ?: opList.map { it.jsonObject }.find { 
-                it["type"]?.jsonPrimitive?.content == "BANNER" 
-            }
-            
-            if (popularOp != null) {
-                if (popularOp["type"]?.jsonPrimitive?.content == "BANNER") {
-                    popularOp["banner"]?.jsonObject?.get("items")?.jsonArray?.let { items.addAll(it) }
-                } else {
-                    popularOp["subjects"]?.jsonArray?.let { items.addAll(it) }
-                }
-            }
-        } else {
-            data["items"]?.jsonArray?.let { items.addAll(it) }
-            data["subjectList"]?.jsonArray?.let { items.addAll(it) }
-        }
-
         val animes = items.mapNotNull { item ->
             val obj = item.jsonObject
             val subject = if (obj.containsKey("subject")) obj["subject"]?.jsonObject else obj
@@ -109,14 +86,12 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                 thumbnail_url = subject["cover"]?.jsonObject?.get("url")?.jsonPrimitive?.content
             }
         }
-        
         val hasMore = data["pager"]?.jsonObject?.get("hasMore")?.jsonPrimitive?.boolean 
-            ?: (animes.size >= 12)
-            
+            ?: (items.size >= 12)
         return AnimesPage(animes, hasMore)
     }
 
-    // Latest: Filtered Latest
+    // Latest: Using filter with LATEST sort
     override fun latestUpdatesRequest(page: Int): Request {
         val body = """{"page": $page, "perPage": 18, "sort": "LATEST"}""".toRequestBody("application/json".toMediaType())
         return POST("$apiBaseUrl/wefeed-h5api-bff/subject/filter", headersBuilder().add("X-Client-Token", getToken()).build(), body)
@@ -227,7 +202,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                                     episodes.add(SEpisode.create().apply {
                                         name = "Season $seNum - Episode $i"
                                         episode_number = i.toFloat()
-                                        // Construct URL for videoListRequest: id, se, ep, detailPath
                                         url = "$subjectId&se=$seNum&ep=$i&detailPath=$detailPath"
                                         date_upload = System.currentTimeMillis()
                                     })
@@ -240,7 +214,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             }
         }
 
-        // Default to movie
         return listOf(SEpisode.create().apply {
             name = "Movie"
             url = "$subjectId&se=0&ep=0&detailPath=$detailPath"
@@ -270,7 +243,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
         val videos = mutableListOf<Video>()
         
-        // Try HLS streams first
         data["hls"]?.jsonArray?.forEach { element ->
             val obj = element.jsonObject
             val url = obj["url"]?.jsonPrimitive?.content ?: return@forEach
@@ -278,7 +250,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             videos.add(Video(url, quality, url))
         }
 
-        // Try direct MP4 streams
         data["streams"]?.jsonArray?.forEach { element ->
             val obj = element.jsonObject
             val url = obj["url"]?.jsonPrimitive?.content ?: return@forEach
@@ -407,7 +378,8 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             
             data.forEach { element ->
                 if (element is JsonObject) {
-                    element.keys.filter { it.startsWith("$") }.forEach { key ->
+                    val obj = element.jsonObject
+                    obj.keys.filter { it.startsWith("$") }.forEach { key ->
                         val bffIdx = element[key]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
                         val bffData = if (bffIdx >= 0 && bffIdx < data.size) resolve(bffIdx) else null
                         if (bffData is JsonObject) {
