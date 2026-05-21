@@ -1,9 +1,6 @@
 name: Build MovieBox
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -23,8 +20,8 @@ jobs:
         run: |
           chmod +x .github/scripts/bump_gradle_version.sh
           .github/scripts/bump_gradle_version.sh
-          git config --global user.email "action@github.com"
-          git config --global user.name "GitHub Action"
+          git config --global user.email "salmanbappi691@gmail.com"
+          git config --global user.name "salmanbappi"
           git add app/build.gradle
           git commit -m "Auto-bump version [skip ci]" || echo "No changes to commit"
           git push origin main || echo "No changes to push"
@@ -78,8 +75,8 @@ jobs:
             cd repo_tmp
             python3 generate_repo.py
             git add apk/*.apk index.min.json repo.json
-            git config user.name "GitHub Action"
-            git config user.email "action@github.com"
+            git config user.name "salmanbappi"
+            git config user.email "salmanbappi691@gmail.com"
             git commit -m "Update MovieBox to v${{ env.VERSION_NAME }}"
             git push
           else
