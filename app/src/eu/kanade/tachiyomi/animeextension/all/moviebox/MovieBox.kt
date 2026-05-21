@@ -25,7 +25,6 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
-import org.jsoup.Jsoup
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.security.MessageDigest
@@ -40,6 +39,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     override val id: Long = 3508466391484419848L
 
     private val apiBaseUrl = "https://h5-api.aoneroom.com"
+    private val playApiBaseUrl = "https://netfilm.world"
     private val blockedKeywords = listOf(
         "mma", "ufc", "wrestling", "boxing", "kickboxing", "muay thai", "rizin",
         "esports", "e-sports", "gaming", "gameplay", "pubg", "free fire", "dota",
@@ -214,7 +214,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val ep = parts.find { it.startsWith("ep=") }?.split("=")?.get(1) ?: "0"
         val detailPath = parts.find { it.startsWith("detailPath=") }?.split("=")?.get(1) ?: ""
         
-        val url = "$apiBaseUrl/wefeed-h5api-bff/subject/play?subjectId=$subjectId&se=$se&ep=$ep&detailPath=$detailPath"
+        val url = "$playApiBaseUrl/wefeed-h5api-bff/subject/play?subjectId=$subjectId&se=$se&ep=$ep&detailPath=$detailPath"
         return GET(url, headersBuilder()
             .add("X-Client-Token", getToken())
             .add("X-Client-Info", """{"timezone":"${TimeZone.getDefault().id}"}""")
@@ -230,28 +230,19 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             throw Exception("Limited Content: Open Website to Unlock")
         }
 
-        val videos = mutableListOf<Video>()
-        
-        data["hls"]?.jsonArray?.forEach { element ->
-            val obj = element.jsonObject
-            val url = obj["url"]?.jsonPrimitive?.content ?: return@forEach
-            val quality = (obj["resolutions"]?.jsonPrimitive?.content ?: "Auto") + "P (HLS)"
-            videos.add(Video(url, quality, url))
-        }
-
-        data["streams"]?.jsonArray?.forEach { element ->
-            val obj = element.jsonObject
-            val url = obj["url"]?.jsonPrimitive?.content ?: return@forEach
-            val quality = (obj["resolutions"]?.jsonPrimitive?.content ?: "Unknown") + "P"
-            videos.add(Video(url, quality, url))
-        }
-
+        val videos = parseVideoItems(data)
         if (videos.isNotEmpty()) return videos
 
+        // Fallback: try legacy API host before giving up.
         val requestUrl = response.request.url
-        val detailPath = requestUrl.queryParameter("detailPath").orEmpty()
-        if (detailPath.isBlank()) return emptyList()
-        return fallbackVideosFromWebPage(detailPath)
+        val legacyUrl = "$apiBaseUrl/wefeed-h5api-bff/subject/play?" + requestUrl.query.orEmpty()
+        val legacyRequest = GET(legacyUrl, headersBuilder()
+            .add("X-Client-Token", getToken())
+            .add("X-Client-Info", """{"timezone":"${TimeZone.getDefault().id}"}""")
+            .build())
+        val legacyBody = client.newCall(legacyRequest).execute().use { it.body.string() }
+        val legacyData = json.parseToJsonElement(legacyBody).jsonObject["data"]?.jsonObject ?: return emptyList()
+        return parseVideoItems(legacyData)
     }
 
     override fun List<Video>.sort(): List<Video> {
@@ -372,28 +363,21 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         }
     }
 
-    private fun fallbackVideosFromWebPage(detailPath: String): List<Video> {
-        val pageUrl = "$baseUrl/movies/$detailPath"
-        val request = GET(pageUrl, headersBuilder().build())
-        val html = client.newCall(request).execute().use { it.body.string() }
-        val doc = Jsoup.parse(html)
-        val videos = LinkedHashSet<String>()
-
-        doc.select("meta[property=og:video:url], meta[property=twitter:video], meta[name=video]")
-            .forEach { meta ->
-                val value = meta.attr("content").trim()
-                if (value.startsWith("http")) videos.add(value)
-            }
-
-        doc.select("script[type=application/ld+json]").forEach { script ->
-            val raw = script.data()
-            Regex("\"contentUrl\"\\s*:\\s*\"([^\"]+)\"").findAll(raw).forEach { match ->
-                val value = match.groupValues.getOrNull(1).orEmpty()
-                if (value.startsWith("http")) videos.add(value)
-            }
+    private fun parseVideoItems(data: JsonObject): List<Video> {
+        val videos = mutableListOf<Video>()
+        data["hls"]?.jsonArray?.forEach { element ->
+            val obj = element.jsonObject
+            val url = obj["url"]?.jsonPrimitive?.content ?: return@forEach
+            val quality = (obj["resolutions"]?.jsonPrimitive?.content ?: "Auto") + "P (HLS)"
+            videos.add(Video(url, quality, url))
         }
-
-        return videos.map { Video(it, "Watch Online", it) }
+        data["streams"]?.jsonArray?.forEach { element ->
+            val obj = element.jsonObject
+            val url = obj["url"]?.jsonPrimitive?.content ?: return@forEach
+            val quality = (obj["resolutions"]?.jsonPrimitive?.content ?: "Unknown") + "P"
+            videos.add(Video(url, quality, url))
+        }
+        return videos
     }
 
     private fun parseSubjectListPage(response: Response): AnimesPage {
