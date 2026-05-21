@@ -231,12 +231,13 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val bodyString = response.body.string()
         val jsonRes = json.parseToJsonElement(bodyString).jsonObject
         val data = jsonRes["data"]?.jsonObject ?: return emptyList()
+        val requestReferer = response.request.header("Referer") ?: "$playApiBaseUrl/"
         
         if (data["limited"]?.jsonPrimitive?.boolean == true) {
             throw Exception("Limited Content: Open Website to Unlock")
         }
 
-        val videos = parseVideoItems(data)
+        val videos = parseVideoItems(data, requestReferer)
         if (videos.isNotEmpty()) return videos
 
         // Fallback: try legacy API host before giving up.
@@ -248,7 +249,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             .build())
         val legacyBody = client.newCall(legacyRequest).execute().use { it.body.string() }
         val legacyData = json.parseToJsonElement(legacyBody).jsonObject["data"]?.jsonObject ?: return emptyList()
-        return parseVideoItems(legacyData)
+        return parseVideoItems(legacyData, requestReferer)
     }
 
     override fun List<Video>.sort(): List<Video> {
@@ -369,21 +370,38 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         }
     }
 
-    private fun parseVideoItems(data: JsonObject): List<Video> {
+    private fun parseVideoItems(data: JsonObject, referer: String): List<Video> {
         val videos = mutableListOf<Video>()
+        val videoHeaders = Headers.headersOf(
+            "Referer", referer,
+            "Origin", playApiBaseUrl,
+            "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        )
         data["hls"]?.jsonArray?.forEach { element ->
             val obj = element.jsonObject
-            val url = obj["url"]?.jsonPrimitive?.content ?: return@forEach
+            val rawUrl = obj["url"]?.jsonPrimitive?.content ?: return@forEach
+            val url = rawUrl.normalizeVideoUrl()
             val quality = (obj["resolutions"]?.jsonPrimitive?.content ?: "Auto") + "P (HLS)"
-            videos.add(Video(url, quality, url))
+            videos.add(Video(url, quality, url, headers = videoHeaders))
         }
         data["streams"]?.jsonArray?.forEach { element ->
             val obj = element.jsonObject
-            val url = obj["url"]?.jsonPrimitive?.content ?: return@forEach
+            val rawUrl = obj["url"]?.jsonPrimitive?.content ?: return@forEach
+            val url = rawUrl.normalizeVideoUrl()
             val quality = (obj["resolutions"]?.jsonPrimitive?.content ?: "Unknown") + "P"
-            videos.add(Video(url, quality, url))
+            videos.add(Video(url, quality, url, headers = videoHeaders))
         }
         return videos
+    }
+
+    private fun String.normalizeVideoUrl(): String {
+        val value = trim()
+        return when {
+            value.startsWith("https://") || value.startsWith("http://") -> value
+            value.startsWith("https:") -> value.replaceFirst("https:", "https://")
+            value.startsWith("http:") -> value.replaceFirst("http:", "http://")
+            else -> value
+        }
     }
 
     private fun parseSubjectListPage(response: Response): AnimesPage {
