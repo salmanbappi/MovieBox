@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.animeextension.all.moviebox
 
 import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
+import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
@@ -20,7 +21,6 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Headers
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -61,7 +61,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             .joinToString("") { "%02x".format(it) }
     }
 
-    // Popular: Using Trending Now ranking list
+    // Popular: Using Trending Now ranking list by default
     override fun popularAnimeRequest(page: Int): Request {
         val url = "$apiBaseUrl/wefeed-h5api-bff/ranking-list/content?id=8610422883619422240&page=$page&perPage=18"
         return GET(url, headersBuilder().add("X-Client-Token", getToken()).build())
@@ -81,7 +81,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             }
         }
         val hasMore = data["pager"]?.jsonObject?.get("hasMore")?.jsonPrimitive?.boolean 
-            ?: (items.size >= 12) // Fallback for ranking list which sometimes omits pager
+            ?: (items.size >= 12)
         return AnimesPage(animes, hasMore)
     }
 
@@ -93,9 +93,31 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     override fun latestUpdatesParse(response: Response): AnimesPage = popularAnimeParse(response)
 
-    // Search
+    // Search & Filters
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
-        val body = """{"keyword": "$query", "page": $page, "perPage": 18}""".toRequestBody("application/json".toMediaType())
+        val rankingFilter = filters.find { it is RankingFilter } as? RankingFilter
+        if (query.isEmpty() && rankingFilter != null && rankingFilter.state > 0) {
+            val rankingId = rankingFilter.toId()
+            val url = "$apiBaseUrl/wefeed-h5api-bff/ranking-list/content?id=$rankingId&page=$page&perPage=18"
+            return GET(url, headersBuilder().add("X-Client-Token", getToken()).build())
+        }
+
+        val typeFilter = filters.find { it is TypeFilter } as? TypeFilter
+        val sortFilter = filters.find { it is SortFilter } as? SortFilter
+        
+        val body = JsonObject(mutableMapOf(
+            "keyword" to kotlinx.serialization.json.JsonPrimitive(query),
+            "page" to kotlinx.serialization.json.JsonPrimitive(page),
+            "perPage" to kotlinx.serialization.json.JsonPrimitive(18)
+        ).apply {
+            if (typeFilter != null && typeFilter.state > 0) {
+                put("subjectType", kotlinx.serialization.json.JsonPrimitive(typeFilter.toId()))
+            }
+            if (sortFilter != null) {
+                put("sort", kotlinx.serialization.json.JsonPrimitive(sortFilter.toId()))
+            }
+        }).toString().toRequestBody("application/json".toMediaType())
+        
         return POST("$apiBaseUrl/wefeed-h5api-bff/subject/search", headersBuilder().add("X-Client-Token", getToken()).build(), body)
     }
 
@@ -110,7 +132,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val nuxtData = json.parseToJsonElement(scriptData).jsonArray
         val resolver = NuxtResolver(nuxtData)
         
-        // Robust subject finding
         val subject = resolver.findSubject() ?: throw Exception("Subject not found in Nuxt data")
         
         return SAnime.create().apply {
@@ -132,7 +153,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         
         val subject = resolver.findSubject() ?: return emptyList()
         
-        // Check for resource/seasons
         val resourceIdx = subject["resource"]?.jsonPrimitive?.content?.toIntOrNull()
         if (resourceIdx != null) {
             val resourceElement = resolver.resolve(resourceIdx)
@@ -146,7 +166,9 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                         val episodes = mutableListOf<SEpisode>()
                         
                         seasons.forEachIndexed { sIdx, sRef ->
-                            val seasonIdx = sRef.jsonPrimitive.content.toIntOrNull() ?: return@forEachIndexed
+                            val seasonIdx = if (sRef is kotlinx.serialization.json.JsonPrimitive) sRef.jsonPrimitive.content.toIntOrNull() else null
+                            if (seasonIdx == null) return@forEachIndexed
+                            
                             val seasonElement = resolver.resolve(seasonIdx)
                             if (seasonElement is JsonObject) {
                                 val season = seasonElement.jsonObject
@@ -169,7 +191,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             }
         }
 
-        // Default to movie
         return listOf(SEpisode.create().apply {
             name = "Movie"
             url = response.request.url.toString()
@@ -215,6 +236,69 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         }
     }
 
+    override fun getFilterList(): AnimeFilterList = AnimeFilterList(
+        SortFilter(),
+        TypeFilter(),
+        RankingFilter()
+    )
+
+    private class SortFilter : AnimeFilter.Select<String>("Sort", arrayOf("Popular", "Latest", "IMDb Rating")) {
+        fun toId() = when (state) {
+            1 -> "LATEST"
+            2 -> "IMDB_RATING"
+            else -> "POPULAR"
+        }
+    }
+
+    private class TypeFilter : AnimeFilter.Select<String>("Type", arrayOf("All", "Movie", "TV Series", "Animation Shows")) {
+        fun toId() = when (state) {
+            1 -> 1 // Movie
+            2 -> 2 // TV Series
+            3 -> 2 // Animation (Also Type 2 usually)
+            else -> 0
+        }
+    }
+
+    private class RankingFilter : AnimeFilter.Select<String>("Ranking List", arrayOf(
+        "None",
+        "Trending Now",
+        "Cinema",
+        "Bollywood",
+        "Hollywood",
+        "South Indian",
+        "Trending Bengali Movies",
+        "Trending Bengali TV",
+        "Asian",
+        "Top Series This Week",
+        "Anime",
+        "Korean Drama",
+        "Chinese Drama",
+        "Indian Drama",
+        "Reality-TV",
+        "Western TV",
+        "Turkish Drama"
+    )) {
+        fun toId() = when (state) {
+            1 -> "8610422883619422240"
+            2 -> "5692654647815587592"
+            3 -> "414907768299210008"
+            4 -> "8019599703232971616"
+            5 -> "3859721901924910512"
+            6 -> "5837669637445565960"
+            7 -> "735765054104261208"
+            8 -> "5429170738815291968"
+            9 -> "5606549574572819920"
+            10 -> "8434602210994128512"
+            11 -> "7878715743607948784"
+            12 -> "8788126208987989488"
+            13 -> "4903182713986896328"
+            14 -> "1255898847918934600"
+            15 -> "3910636007619709856"
+            16 -> "5177200225164885656"
+            else -> ""
+        }
+    }
+
     override fun setupPreferenceScreen(screen: PreferenceScreen) {}
 
     private inner class NuxtResolver(val data: JsonArray) {
@@ -224,7 +308,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             if (element == null) return null
             val idx = element.jsonPrimitive.content.toIntOrNull() ?: return element.jsonPrimitive.content
             return if (idx >= 0 && idx < data.size && data[idx] is kotlinx.serialization.json.JsonPrimitive) {
-                data[idx].jsonPrimitive.contentOrNull
+                data[idx].jsonPrimitive.content
             } else null
         }
 
@@ -233,17 +317,14 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         }
 
         fun findSubject(): JsonObject? {
-            // Find the state object, usually at index 1
             if (data.size < 2) return null
             val state = data[1].jsonObject
             
-            // Look for keys starting with $ (BFF data)
             state.keys.filter { it.startsWith("$") }.forEach { key ->
                 val bffIdx = state[key]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
                 val bffData = resolve(bffIdx)
                 if (bffData is JsonObject) {
                     val bffObj = bffData.jsonObject
-                    // Look for 'subject' or 'items'
                     if (bffObj.containsKey("subject")) {
                         val subIdx = bffObj["subject"]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
                         val sub = resolve(subIdx)
