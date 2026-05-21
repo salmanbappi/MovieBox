@@ -190,10 +190,10 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val subjectId = resolver.getString(subject["subjectId"]) ?: ""
         val detailPath = java.net.URL(response.request.url.toString()).path.split("/").last { it.isNotEmpty() }
         
-        val resourceIdx = resolver.resolve(subject["resource"])?.let { if (it is kotlinx.serialization.json.JsonPrimitive) it.content.toIntOrNull() else null }
+        val resourceIdx = resolver.resolveIdx(subject["resource"])
         if (resourceIdx != null) {
             val resource = resolver.resolveObject(resourceIdx)
-            val seasonsIdx = resource?.get("seasons")?.let { if (it is kotlinx.serialization.json.JsonPrimitive) it.content.toIntOrNull() else null }
+            val seasonsIdx = resolver.resolveIdx(resource?.get("seasons"))
             if (seasonsIdx != null) {
                 val seasons = resolver.resolve(seasonsIdx)?.jsonArray
                 if (seasons != null) {
@@ -386,8 +386,25 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             return element
         }
 
+        fun resolve(idx: Int): JsonElement? {
+            return if (idx >= 0 && idx < data.size) data[idx] else null
+        }
+
+        fun resolveIdx(element: JsonElement?): Int? {
+            if (element == null) return null
+            if (element is kotlinx.serialization.json.JsonPrimitive && !element.isString) {
+                return element.content.toIntOrNull()
+            }
+            return null
+        }
+
         fun resolveObject(element: JsonElement?): JsonObject? {
             val resolved = resolve(element)
+            return if (resolved is JsonObject) resolved.jsonObject else null
+        }
+
+        fun resolveObject(idx: Int): JsonObject? {
+            val resolved = resolve(idx)
             return if (resolved is JsonObject) resolved.jsonObject else null
         }
 
@@ -404,12 +421,11 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         fun findSubject(): JsonObject? {
             if (data.size < 2) return null
             
-            // Search all objects for BFF keys starting with $
             data.forEach { element ->
                 if (element is JsonObject) {
                     element.keys.filter { it.startsWith("$") }.forEach { key ->
                         val bffIdx = element[key]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
-                        val bffData = if (bffIdx >= 0 && bffIdx < data.size) resolve(bffIdx) else null
+                        val bffData = resolve(bffIdx)
                         if (bffData is JsonObject) {
                             val bffObj = bffData.jsonObject
                             if (bffObj.containsKey("subject")) {
