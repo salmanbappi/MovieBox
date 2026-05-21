@@ -125,6 +125,22 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             return GET(url, headersBuilder().add("X-Client-Token", getToken()).build())
         }
 
+        if (query.isNotBlank()) {
+            // Website native keyword search endpoint.
+            val body = JsonObject(
+                mapOf(
+                    "keyword" to kotlinx.serialization.json.JsonPrimitive(query),
+                    "page" to kotlinx.serialization.json.JsonPrimitive(page),
+                    "perPage" to kotlinx.serialization.json.JsonPrimitive(18),
+                ),
+            ).toString().toRequestBody("application/json".toMediaType())
+            return POST(
+                "$apiBaseUrl/wefeed-h5api-bff/subject/search",
+                headersBuilder().add("X-Client-Token", getToken()).build(),
+                body,
+            )
+        }
+
         val typeFilter = filters.find { it is TypeFilter } as? TypeFilter
         val sortFilter = filters.find { it is SortFilter } as? SortFilter
         val genreFilter = filters.find { it is GenreFilter } as? GenreFilter
@@ -157,7 +173,27 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         return POST("$apiBaseUrl/wefeed-h5api-bff/subject/filter", headersBuilder().add("X-Client-Token", getToken()).build(), body)
     }
 
-    override fun searchAnimeParse(response: Response): AnimesPage = latestUpdatesParse(response)
+    override fun searchAnimeParse(response: Response): AnimesPage {
+        val bodyString = response.body.string()
+        val jsonRes = json.parseToJsonElement(bodyString).jsonObject
+        val data = jsonRes["data"]?.jsonObject ?: return AnimesPage(emptyList(), false)
+        val items = data["items"]?.jsonArray ?: data["subjectList"]?.jsonArray ?: return AnimesPage(emptyList(), false)
+
+        val animes = items.mapNotNull { item ->
+            val obj = item.jsonObject
+            val subject = if (obj.containsKey("subject")) obj["subject"]?.jsonObject else obj
+            if (subject == null) return@mapNotNull null
+
+            SAnime.create().apply {
+                title = subject["title"]?.jsonPrimitive?.content ?: ""
+                url = "/movies/" + (subject["detailPath"]?.jsonPrimitive?.content ?: "")
+                thumbnail_url = subject["cover"]?.jsonObject?.get("url")?.jsonPrimitive?.content
+            }
+        }
+
+        val hasMore = data["pager"]?.jsonObject?.get("hasMore")?.jsonPrimitive?.boolean ?: (animes.size >= 12)
+        return AnimesPage(animes, hasMore)
+    }
 
     // Details
     override fun animeDetailsParse(response: Response): SAnime {
