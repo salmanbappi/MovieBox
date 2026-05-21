@@ -72,9 +72,10 @@ jobs:
           if [ -n "${{ secrets.GH_PAT }}" ]; then
             git clone https://${{ secrets.GH_PAT }}@github.com/salmanbappi/extensions-repo.git repo_tmp
             cp app/build/outputs/apk/release/*.apk repo_tmp/apk/
+            cp app/src/main/res/drawable/ic_launcher.png repo_tmp/icon/eu.kanade.tachiyomi.animeextension.all.moviebox.png
             cd repo_tmp
             python3 generate_repo.py
-            git add apk/*.apk index.min.json repo.json
+            git add apk/*.apk icon/*.png index.min.json repo.json
             git config user.name "salmanbappi"
             git config user.email "salmanbappi691@gmail.com"
             git commit -m "Update MovieBox to v${{ env.VERSION_NAME }}"
