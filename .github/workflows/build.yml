@@ -1,7 +1,9 @@
 name: Build MovieBox
-run-name: "MovieBox: ${{ github.event.head_commit.message || format('Manual run by @{0}', github.actor) }}"
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
