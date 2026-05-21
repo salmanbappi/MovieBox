@@ -7,6 +7,7 @@ import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
+import eu.kanade.tachiyomi.animesource.model.Track
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
@@ -372,6 +373,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     private fun parseVideoItems(data: JsonObject, referer: String): List<Video> {
         val videos = mutableListOf<Video>()
+        val subtitleTracks = fetchSubtitleTracks(data, referer)
         val videoHeaders = Headers.headersOf(
             "Referer", referer,
             "Origin", playApiBaseUrl,
@@ -382,16 +384,61 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             val rawUrl = obj["url"]?.jsonPrimitive?.content ?: return@forEach
             val url = rawUrl.normalizeVideoUrl()
             val quality = (obj["resolutions"]?.jsonPrimitive?.content ?: "Auto") + "P (HLS)"
-            videos.add(Video(url, quality, url, headers = videoHeaders))
+            videos.add(Video(url, quality, url, headers = videoHeaders, subtitleTracks = subtitleTracks))
         }
         data["streams"]?.jsonArray?.forEach { element ->
             val obj = element.jsonObject
             val rawUrl = obj["url"]?.jsonPrimitive?.content ?: return@forEach
             val url = rawUrl.normalizeVideoUrl()
             val quality = (obj["resolutions"]?.jsonPrimitive?.content ?: "Unknown") + "P"
-            videos.add(Video(url, quality, url, headers = videoHeaders))
+            videos.add(Video(url, quality, url, headers = videoHeaders, subtitleTracks = subtitleTracks))
         }
         return videos
+    }
+
+    private fun fetchSubtitleTracks(data: JsonObject, referer: String): List<Track> {
+        val hls = data["hls"]?.jsonArray.orEmpty()
+        val streams = data["streams"]?.jsonArray.orEmpty()
+        val (format, id) = when {
+            hls.isNotEmpty() -> "HLS" to (hls.first().jsonObject["id"]?.jsonPrimitive?.content ?: "")
+            streams.isNotEmpty() -> "MP4" to (streams.first().jsonObject["id"]?.jsonPrimitive?.content ?: "")
+            else -> "" to ""
+        }
+        if (format.isBlank() || id.isBlank()) return emptyList()
+
+        val refererUrl = runCatching { java.net.URL(referer) }.getOrNull() ?: return emptyList()
+        val detailPath = refererUrl.path.split("/").lastOrNull { it.isNotBlank() } ?: return emptyList()
+        val subjectId = refererUrl.query
+            ?.split("&")
+            ?.mapNotNull {
+                val p = it.split("=")
+                if (p.size == 2 && p[0] == "id") p[1] else null
+            }?.firstOrNull().orEmpty()
+        if (subjectId.isBlank()) return emptyList()
+
+        val captionUrl = "$playApiBaseUrl/wefeed-h5api-bff/subject/caption?format=$format&id=$id&subjectId=$subjectId&detailPath=$detailPath"
+        val captionHeaders = Headers.Builder()
+            .add("Accept", "application/json")
+            .add("Origin", playApiBaseUrl)
+            .add("Referer", referer)
+            .add("X-Client-Info", """{"timezone":"${TimeZone.getDefault().id}"}""")
+            .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .build()
+
+        return runCatching {
+            val req = GET(captionUrl, captionHeaders)
+            val body = client.newCall(req).execute().use { it.body.string() }
+            val captions = json.parseToJsonElement(body).jsonObject["data"]?.jsonObject?.get("captions")?.jsonArray.orEmpty()
+            captions.mapNotNull { cap ->
+                val obj = cap.jsonObject
+                val url = obj["url"]?.jsonPrimitive?.content.orEmpty().normalizeVideoUrl()
+                if (url.isBlank()) return@mapNotNull null
+                val lang = obj["lanName"]?.jsonPrimitive?.content
+                    ?: obj["lan"]?.jsonPrimitive?.content
+                    ?: "Unknown"
+                Track(url, lang)
+            }
+        }.getOrDefault(emptyList())
     }
 
     private fun String.normalizeVideoUrl(): String {
