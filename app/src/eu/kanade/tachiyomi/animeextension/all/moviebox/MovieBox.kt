@@ -75,6 +75,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             .add("accept", "application/json")
             .add("content-type", contentType)
             .add("connection", "keep-alive")
+            .add("x-source", "mb_call_hola")
             .add("x-client-token", generateXClientToken(timestamp))
             .add("x-tr-signature", generateXTrSignature(method, "application/json", contentType, url, body, timestamp = timestamp))
             .add("x-client-info", getClientInfo())
@@ -191,7 +192,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     // Popular: High-Quality Trending API
     override fun popularAnimeRequest(page: Int): Request {
-        val url = "$mobileApiBaseUrl/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=4516404531735022304&page=$page&perPage=18"
+        val url = "$mobileApiBaseUrl/wefeed-h5api-bff/ranking-list/content?id=4516404531735022304&page=$page&perPage=18"
         return GET(url, getMobileHeaders(url))
     }
 
@@ -209,12 +210,12 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val rankingFilter = filters.find { it is RankingFilter } as? RankingFilter
         if (query.isEmpty() && rankingFilter != null && rankingFilter.state > 0) {
             val rankingId = rankingFilter.toId()
-            val url = "$mobileApiBaseUrl/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=$rankingId&page=$page&perPage=18"
+            val url = "$mobileApiBaseUrl/wefeed-h5api-bff/ranking-list/content?id=$rankingId&page=$page&perPage=18"
             return GET(url, getMobileHeaders(url))
         }
 
         if (query.isNotBlank()) {
-            val url = "$mobileApiBaseUrl/wefeed-mobile-bff/subject-api/search/v2"
+            val url = "$mobileApiBaseUrl/wefeed-h5api-bff/subject/search"
             val bodyData = JsonObject(
                 mapOf(
                     "keyword" to kotlinx.serialization.json.JsonPrimitive(query),
@@ -268,9 +269,9 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             bodyMap["country"] = kotlinx.serialization.json.JsonPrimitive(countryFilter.toId())
         }
 
-        val url = "$mobileApiBaseUrl/wefeed-mobile-bff/subject-api/filter"
+        val url = "$mobileApiBaseUrl/wefeed-h5api-bff/subject/filter"
         val bodyData = JsonObject(bodyMap).toString()
-        val body = bodyData.toRequestBody("application/json".toMediaType())
+        val body = bodyData.toRequestBody("application/json; charset=utf-8".toMediaType())
         return POST(url, getMobileHeaders(url, "POST", bodyData), body)
     }
 
@@ -281,7 +282,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     // Details
     override fun animeDetailsRequest(anime: SAnime): Request {
         val id = anime.url.split("/").last()
-        val url = "$mobileApiBaseUrl/wefeed-mobile-bff/subject-api/get?subjectId=$id"
+        val url = "$mobileApiBaseUrl/wefeed-h5api-bff/subject/get?subjectId=$id"
         return GET(url, getMobileHeaders(url))
     }
 
@@ -308,7 +309,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val subjectId = subject["subjectId"]?.jsonPrimitive?.content ?: return emptyList()
         
         // Fetch seasons from dedicated mobile endpoint for 100% accuracy
-        val seasonsUrl = "$mobileApiBaseUrl/wefeed-mobile-bff/subject-api/season-info?subjectId=$subjectId"
+        val seasonsUrl = "$mobileApiBaseUrl/wefeed-h5api-bff/subject/season-info?subjectId=$subjectId"
         val seasonsRequest = GET(seasonsUrl, getMobileHeaders(seasonsUrl))
         val seasonsResponse = client.newCall(seasonsRequest).execute().use { it.body.string() }
         val seasonsJson = json.parseToJsonElement(seasonsResponse).jsonObject
@@ -349,7 +350,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val se = parts.find { it.startsWith("se=") }?.split("=")?.get(1) ?: "0"
         val ep = parts.find { it.startsWith("ep=") }?.split("=")?.get(1) ?: "0"
         
-        val url = "$mobileApiBaseUrl/wefeed-mobile-bff/subject-api/play-info?subjectId=$subjectId&se=$se&ep=$ep"
+        val url = "$mobileApiBaseUrl/wefeed-h5api-bff/subject/play?subjectId=$subjectId&se=$se&ep=$ep"
         return GET(url, getMobileHeaders(url))
     }
 
@@ -373,6 +374,45 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                 else -> 0
             }
         }
+    }
+
+    private fun parseSubjectListPage(response: Response): AnimesPage {
+        val bodyString = response.body.string()
+        val jsonRes = json.parseToJsonElement(bodyString).jsonObject
+        val data = jsonRes["data"]?.jsonObject ?: return AnimesPage(emptyList(), false)
+        
+        // Handle both 'subjectList' and 'results' (for search v2)
+        val rawItems = data["subjectList"]?.jsonArray 
+            ?: data["items"]?.jsonArray 
+            ?: data["results"]?.jsonArray?.mapNotNull { it.jsonObject["subjects"]?.jsonArray }?.flatten()
+            ?: return AnimesPage(emptyList(), false)
+
+        val items = rawItems as List<JsonElement>
+
+        val animes = items.mapNotNull { item ->
+            val obj = item.jsonObject
+            val subject = if (obj.containsKey("subject")) obj["subject"]?.jsonObject else obj
+            if (subject == null || !isAllowedSubject(subject)) return@mapNotNull null
+
+            val id = subject["subjectId"]?.jsonPrimitive?.content 
+                ?: subject["id"]?.jsonPrimitive?.content 
+                ?: subject["detailPath"]?.jsonPrimitive?.content 
+                ?: return@mapNotNull null
+
+            SAnime.create().apply {
+                title = subject["title"]?.jsonPrimitive?.content ?: ""
+                url = "/movies/$id"
+                thumbnail_url = subject["cover"]?.jsonObject?.get("url")?.jsonPrimitive?.content
+            }
+        }
+
+        val hasMore = data["pager"]?.jsonObject?.get("hasMore")?.jsonPrimitive?.boolean ?: (animes.size >= 12)
+        return AnimesPage(animes, hasMore)
+    }
+
+    private fun isAllowedSubject(subject: JsonObject): Boolean {
+        val title = subject["title"]?.jsonPrimitive?.content?.lowercase() ?: ""
+        return blockedKeywords.none { title.contains(it) }
     }
 
     override fun getFilterList(): AnimeFilterList = AnimeFilterList(
@@ -499,7 +539,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             val obj = element.jsonObject
             val rawUrl = obj["url"]?.jsonPrimitive?.content ?: return@forEach
             val url = rawUrl.normalizeVideoUrl()
-            val quality = (obj["resolutions"]?.jsonPrimitive?.content ?: "Unknown") + "P"
+            val quality = (obj["resolutions"]?.jsonPrimitive?.content ?: "Auto") + "P (MP4)"
             videos.add(Video(url, quality, url, headers = videoHeaders, subtitleTracks = subtitleTracks))
         }
         return videos
@@ -520,7 +560,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
         if (streamId.isBlank() || subjectId.isBlank()) return emptyList()
 
-        val url = "$mobileApiBaseUrl/wefeed-mobile-bff/subject-api/get-stream-captions?subjectId=$subjectId&streamId=$streamId"
+        val url = "$mobileApiBaseUrl/wefeed-h5api-bff/subject/get-stream-captions?subjectId=$subjectId&streamId=$streamId"
         
         return runCatching {
             val req = GET(url, getMobileHeaders(url))
@@ -539,134 +579,12 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     private fun String.normalizeVideoUrl(): String {
-        val value = trim()
+        val value = this
         return when {
             value.startsWith("https://") || value.startsWith("http://") -> value
             value.startsWith("https:") -> value.replaceFirst("https:", "https://")
             value.startsWith("http:") -> value.replaceFirst("http:", "http://")
             else -> value
-        }
-    }
-
-    private fun parseSubjectListPage(response: Response): AnimesPage {
-        val bodyString = response.body.string()
-        val jsonRes = json.parseToJsonElement(bodyString).jsonObject
-        val data = jsonRes["data"]?.jsonObject ?: return AnimesPage(emptyList(), false)
-        
-        // Handle both 'subjectList' and 'results' (for search v2)
-        val rawItems = data["subjectList"]?.jsonArray 
-            ?: data["items"]?.jsonArray 
-            ?: data["results"]?.jsonArray?.mapNotNull { it.jsonObject["subjects"]?.jsonArray }?.flatten()
-            ?: return AnimesPage(emptyList(), false)
-
-        val items = rawItems as List<JsonElement>
-
-        val animes = items.mapNotNull { item ->
-            val obj = item.jsonObject
-            val subject = if (obj.containsKey("subject")) obj["subject"]?.jsonObject else obj
-            if (subject == null || !isAllowedSubject(subject)) return@mapNotNull null
-
-            val id = subject["subjectId"]?.jsonPrimitive?.content 
-                ?: subject["id"]?.jsonPrimitive?.content 
-                ?: subject["detailPath"]?.jsonPrimitive?.content 
-                ?: return@mapNotNull null
-
-            SAnime.create().apply {
-                title = subject["title"]?.jsonPrimitive?.content ?: ""
-                url = "/movies/$id"
-                thumbnail_url = subject["cover"]?.jsonObject?.get("url")?.jsonPrimitive?.content
-            }
-        }
-
-        val hasMore = data["pager"]?.jsonObject?.get("hasMore")?.jsonPrimitive?.boolean ?: (animes.size >= 12)
-        return AnimesPage(animes, hasMore)
-    }
-
-    private fun isAllowedSubject(subject: JsonObject): Boolean {
-        val subjectType = subject["subjectType"]?.jsonPrimitive?.content?.toIntOrNull()
-        // Strictly allow only real content types: 
-        // 4: Movie, 2: TV Series, 1: Short/Web Series
-        if (subjectType !in listOf(1, 2, 4)) return false
-
-        val text = buildString {
-            append(subject["title"]?.jsonPrimitive?.content.orEmpty())
-            append(' ')
-            append(subject["genre"]?.jsonPrimitive?.content.orEmpty())
-            append(' ')
-            append(subject["classify"]?.jsonPrimitive?.content.orEmpty())
-            append(' ')
-            append(subject["description"]?.jsonPrimitive?.content.orEmpty())
-        }.lowercase()
-
-        return blockedKeywords.none { text.contains(it) }
-    }
-
-    private inner class NuxtResolver(val data: JsonArray) {
-        fun resolve(element: JsonElement?): JsonElement? {
-            if (element == null) return null
-            if (element is kotlinx.serialization.json.JsonPrimitive && !element.isString) {
-                val idx = element.content.toIntOrNull() ?: return element
-                return if (idx >= 0 && idx < data.size) data[idx] else element
-            }
-            return element
-        }
-
-        fun resolve(idx: Int): JsonElement? {
-            return if (idx >= 0 && idx < data.size) data[idx] else null
-        }
-
-        fun resolveIdx(element: JsonElement?): Int? {
-            if (element == null) return null
-            if (element is kotlinx.serialization.json.JsonPrimitive && !element.isString) {
-                return element.content.toIntOrNull()
-            }
-            return null
-        }
-
-        fun resolveObject(element: JsonElement?): JsonObject? {
-            val resolved = resolve(element)
-            return if (resolved is JsonObject) resolved.jsonObject else null
-        }
-
-        fun resolveObject(idx: Int): JsonObject? {
-            val resolved = resolve(idx)
-            return if (resolved is JsonObject) resolved.jsonObject else null
-        }
-
-        fun getString(element: JsonElement?): String? {
-            val resolved = resolve(element)
-            return if (resolved is kotlinx.serialization.json.JsonPrimitive) resolved.content else null
-        }
-
-        fun getInt(element: JsonElement?): Int? {
-            val resolved = resolve(element)
-            return resolved?.jsonPrimitive?.content?.toIntOrNull()
-        }
-
-        fun findSubject(): JsonObject? {
-            if (data.size < 2) return null
-            
-            data.forEach { element ->
-                if (element is JsonObject) {
-                    element.keys.filter { it.startsWith("$") }.forEach { key ->
-                        val bffIdx = element[key]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
-                        val bffData = resolve(bffIdx)
-                        if (bffData is JsonObject) {
-                            val bffObj = bffData.jsonObject
-                            if (bffObj.containsKey("subject")) {
-                                return resolveObject(bffObj["subject"])
-                            }
-                            if (bffObj.containsKey("data")) {
-                                val innerData = resolveObject(bffObj["data"])
-                                if (innerData != null && innerData.containsKey("subject")) {
-                                    return resolveObject(innerData["subject"])
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            return null
         }
     }
 }
