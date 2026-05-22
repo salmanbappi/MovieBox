@@ -398,6 +398,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                 val url = obj["url"]?.str ?: return@forEach
                 val resolutions = obj["resolutions"]?.str ?: "Auto"
                 val signCookie = obj["signCookie"]?.str
+                val streamId = obj["id"]?.str ?: ""
                 
                 val headers = Headers.Builder()
                     .add("Referer", "https://h5.aoneroom.com/")
@@ -405,10 +406,23 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                     .apply { if (!signCookie.isNullOrBlank()) add("Cookie", signCookie) }
                     .build()
                 
+                // Fetch Subtitles for this specific stream
+                val subtitleTracks = mutableListOf<Track>()
+                if (streamId.isNotBlank()) {
+                    val subUrl = "/wefeed-mobile-bff/subject-api/get-stream-captions?subjectId=$sid&streamId=$streamId"
+                    val subRes = safeGetJsonWithHeaders(subUrl, token = token, isPlayback = true)?.first
+                    subRes?.obj?.get("data")?.obj?.get("extCaptions")?.arr?.forEach { cap ->
+                        val capObj = cap.obj ?: return@forEach
+                        val capUrl = capObj["url"]?.str ?: return@forEach
+                        val capLang = capObj["lanName"]?.str ?: capObj["language"]?.str ?: "Unknown"
+                        subtitleTracks.add(Track(capUrl, capLang))
+                    }
+                }
+
                 val langTag = lang.replace("dub", "").replace("dubbed", "").trim()
                 resolutions.split(",").forEach { res ->
                     val quality = "${res.trim()}P ($langTag)"
-                    videos.add(Video(url, quality, url, headers = headers))
+                    videos.add(Video(url, quality, url, headers = headers, subtitleTracks = subtitleTracks))
                 }
             }
         }
