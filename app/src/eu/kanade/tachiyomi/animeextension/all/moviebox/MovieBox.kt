@@ -18,9 +18,11 @@ import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -131,7 +133,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         body: String?,
         timestamp: Long
     ): String {
-        // Use Uri.parse to match CloudStream path behavior (unencoded)
         val parsed = Uri.parse(url)
         val path = parsed.path ?: ""
         
@@ -192,7 +193,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     private fun safeGetJsonWithHeaders(urlPath: String, isPost: Boolean = false, bodyData: String? = null, token: String? = null): Pair<JsonElement, Headers>? {
-        var lastError: Exception? = null
         for (host in apiHosts) {
             val url = host + urlPath
             val request = if (isPost) {
@@ -207,7 +207,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                 if (body.isEmpty() || body.contains("<html", ignoreCase = true) || !body.startsWith("{")) continue
                 return Pair(json.parseToJsonElement(body), response.headers)
             } catch (e: Exception) {
-                lastError = e
                 continue
             }
         }
@@ -226,7 +225,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             safeGetJsonWithHeaders(response.request.url.toString().substringAfter(".com").substringAfter(".world"))?.first
         } else json.parseToJsonElement(body)
         
-        val data = jsonRes?.jsonObject?.get("data")?.jsonObject ?: return AnimesPage(emptyList(), false)
+        val data = jsonRes?.obj?.get("data")?.obj ?: return AnimesPage(emptyList(), false)
         return parseSubjectListPage(data)
     }
 
@@ -245,11 +244,10 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     override fun searchAnimeParse(response: Response): AnimesPage {
         val body = response.body.string()
         val jsonRes = if (body.contains("<html", ignoreCase = true) || !body.startsWith("{")) {
-             // Search failover is hard for POST, but try trending
              safeGetJsonWithHeaders("/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=4516404531735022304&page=1&perPage=18")?.first
         } else json.parseToJsonElement(body)
         
-        val data = jsonRes?.jsonObject?.get("data")?.jsonObject ?: return AnimesPage(emptyList(), false)
+        val data = jsonRes?.obj?.get("data")?.obj ?: return AnimesPage(emptyList(), false)
         return parseSubjectListPage(data)
     }
 
@@ -263,26 +261,26 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     override fun animeDetailsParse(response: Response): SAnime {
         val xUser = response.header("x-user")
-        var token = xUser?.let { runCatching { json.parseToJsonElement(it).jsonObject["token"]?.jsonPrimitive?.content }.getOrNull() }
+        var token = xUser?.let { runCatching { json.parseToJsonElement(it).obj?.get("token")?.str }.getOrNull() }
         
         val body = response.body.string()
         val jsonRes = if (body.contains("<html", ignoreCase = true) || !body.startsWith("{")) {
             val id = response.request.url.queryParameter("subjectId") ?: response.request.url.queryParameter("detailPath").orEmpty()
             val param = if (id.all { it.isDigit() }) "subjectId" else "detailPath"
             val result = safeGetJsonWithHeaders("/wefeed-mobile-bff/subject-api/get?$param=$id")
-            token = result?.second?.get("x-user")?.let { runCatching { json.parseToJsonElement(it).jsonObject["token"]?.jsonPrimitive?.content }.getOrNull() }
+            token = result?.second?.get("x-user")?.let { runCatching { json.parseToJsonElement(it).obj?.get("token")?.str }.getOrNull() }
             result?.first
         } else json.parseToJsonElement(body)
         
-        val data = jsonRes?.jsonObject?.get("data")?.jsonObject ?: throw Exception("Details not found")
-        val subject = data["subject"]?.jsonObject ?: data
+        val data = jsonRes?.obj?.get("data")?.obj ?: throw Exception("Details not found")
+        val subject = data["subject"]?.obj ?: data
 
         return SAnime.create().apply {
-            title = subject["title"]?.jsonPrimitive?.content ?: ""
-            description = subject["description"]?.jsonPrimitive?.content
-            genre = subject["genre"]?.jsonPrimitive?.content
-            author = subject["countryName"]?.jsonPrimitive?.content
-            url = subject["subjectId"]?.jsonPrimitive?.content?.let { "/movies/$it" } ?: url
+            title = subject["title"]?.str ?: ""
+            description = subject["description"]?.str
+            genre = subject["genre"]?.str
+            author = subject["countryName"]?.str
+            url = subject["subjectId"]?.str?.let { "/movies/$it" } ?: url
             if (!token.isNullOrBlank()) url += "|$token"
             status = SAnime.UNKNOWN
         }
@@ -290,7 +288,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     override fun episodeListParse(response: Response): List<SEpisode> {
         val xUser = response.header("x-user")
-        val headerToken = xUser?.let { runCatching { json.parseToJsonElement(it).jsonObject["token"]?.jsonPrimitive?.content }.getOrNull() }
+        val headerToken = xUser?.let { runCatching { json.parseToJsonElement(it).obj?.get("token")?.str }.getOrNull() }
         val urlParts = response.request.url.toString().split("|")
         val token = headerToken ?: (if (urlParts.size > 1) urlParts[1] else null)
         
@@ -301,30 +299,30 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             safeGetJsonWithHeaders("/wefeed-mobile-bff/subject-api/get?$param=$id", token = token)?.first
         } else json.parseToJsonElement(body)
         
-        val data = jsonRes?.jsonObject?.get("data")?.jsonObject ?: return emptyList()
-        val subjectId = data["subject"]?.jsonObject?.get("subjectId")?.jsonPrimitive?.content 
-            ?: data["subjectId"]?.jsonPrimitive?.content ?: return emptyList()
-        val detailPath = data["subject"]?.jsonObject?.get("detailPath")?.jsonPrimitive?.content ?: subjectId
+        val data = jsonRes?.obj?.get("data")?.obj ?: return emptyList()
+        val subjectId = data["subject"]?.obj?.get("subjectId")?.str 
+            ?: data["subjectId"]?.str ?: return emptyList()
+        val detailPath = data["subject"]?.obj?.get("detailPath")?.str ?: subjectId
         
         val allIds = mutableListOf(subjectId)
-        val dubs = data["subject"]?.jsonObject?.get("dubs")?.jsonArray ?: data["dubs"]?.jsonArray
-        dubs?.forEach { it.jsonObject["subjectId"]?.jsonPrimitive?.content?.let { sid -> if (sid !in allIds) allIds.add(sid) } }
+        val dubs = data["subject"]?.obj?.get("dubs")?.arr ?: data["dubs"]?.arr
+        dubs?.forEach { it.obj?.get("subjectId")?.str?.let { sid -> if (sid !in allIds) allIds.add(sid) } }
 
         val episodes = mutableListOf<SEpisode>()
         val seasonsMap = mutableMapOf<Int, MutableSet<Int>>()
 
         for (sid in allIds) {
-            val currentSeasons = data["resource"]?.jsonObject?.get("seasons")?.jsonArray ?: data["seasons"]?.jsonArray
-            val seasonsToUse = if (sid == subjectId && !currentSeasons.isNullOrEmpty()) currentSeasons else {
+            val currentSeasons = data["resource"]?.obj?.get("seasons")?.arr ?: data["seasons"]?.arr
+            val seasonsToUse = if (sid == subjectId && currentSeasons != null) currentSeasons else {
                 val seasonsUrl = "/wefeed-mobile-bff/subject-api/season-info?subjectId=$sid"
                 val seasonsRes = safeGetJsonWithHeaders(seasonsUrl, token = token)?.first
-                seasonsRes?.jsonObject?.get("data")?.jsonObject?.get("seasons")?.jsonArray
+                seasonsRes?.obj?.get("data")?.obj?.get("seasons")?.arr
             }
             
             seasonsToUse?.forEach { seasonEl ->
-                val season = seasonEl.jsonObject
-                val seNum = season["se"]?.jsonPrimitive?.content?.toIntOrNull() ?: 1
-                val maxEp = season["maxEp"]?.jsonPrimitive?.content?.toIntOrNull() ?: 1
+                val season = seasonEl.obj ?: return@forEach
+                val seNum = season["se"]?.str?.toIntOrNull() ?: 1
+                val maxEp = season["maxEp"]?.str?.toIntOrNull() ?: 1
                 val epSet = seasonsMap.getOrPut(seNum) { mutableSetOf() }
                 for (i in 1..maxEp) epSet.add(i)
             }
@@ -370,13 +368,13 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         for (sid in subjectIds) {
             val playUrl = "/wefeed-mobile-bff/subject-api/play-info?subjectId=$sid&se=$se&ep=$ep"
             val jsonRes = safeGetJsonWithHeaders(playUrl, token = token)?.first ?: continue
-            val data = jsonRes.jsonObject["data"]?.jsonObject ?: continue
+            val data = jsonRes.obj?.get("data")?.obj ?: continue
             
-            data["streams"]?.jsonArray?.forEach { stream ->
-                val obj = stream.jsonObject
-                val url = obj["url"]?.jsonPrimitive?.content ?: return@forEach
-                val quality = (obj["resolutions"]?.jsonPrimitive?.content ?: "Auto") + "P"
-                val signCookie = obj["signCookie"]?.jsonPrimitive?.content
+            data["streams"]?.arr?.forEach { stream ->
+                val obj = stream.obj ?: return@forEach
+                val url = obj["url"]?.str ?: return@forEach
+                val quality = (obj["resolutions"]?.str ?: "Auto") + "P"
+                val signCookie = obj["signCookie"]?.str
                 val headers = Headers.Builder()
                     .add("Referer", "https://h5.aoneroom.com/")
                     .add("User-Agent", "Mozilla/5.0")
@@ -389,23 +387,28 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     private fun parseSubjectListPage(data: JsonObject): AnimesPage {
-        val items = data["subjectList"]?.jsonArray ?: data["items"]?.jsonArray ?: data["subjects"]?.jsonArray
-            ?: data["results"]?.jsonArray?.mapNotNull { it.jsonObject["subjects"]?.jsonArray }?.flatten()
+        val items = data["subjectList"]?.arr ?: data["items"]?.arr ?: data["subjects"]?.arr
+            ?: data["results"]?.arr?.mapNotNull { it.obj?.get("subjects")?.arr }?.flatten()
             ?: return AnimesPage(emptyList(), false)
 
         val animes = (items as List<JsonElement>).mapNotNull { item ->
-            val obj = item.jsonObject
-            val subject = if (obj.containsKey("subject")) obj["subject"]?.jsonObject else obj
+            val obj = item.obj ?: return@mapNotNull null
+            val subject = if (obj.containsKey("subject")) obj["subject"]?.obj else obj
             if (subject == null) return@mapNotNull null
-            val id = subject["subjectId"]?.jsonPrimitive?.content ?: return@mapNotNull null
+            val id = subject["subjectId"]?.str ?: return@mapNotNull null
             SAnime.create().apply {
-                title = subject["title"]?.jsonPrimitive?.content ?: ""
+                title = subject["title"]?.str ?: ""
                 url = "/movies/$id"
-                thumbnail_url = subject["cover"]?.jsonObject?.get("url")?.jsonPrimitive?.content
+                thumbnail_url = subject["cover"]?.obj?.get("url")?.str
             }
         }
-        return AnimesPage(animes, data["pager"]?.jsonObject?.get("hasMore")?.jsonPrimitive?.boolean ?: (animes.size >= 12))
+        return AnimesPage(animes, data["pager"]?.obj?.get("hasMore")?.jsonPrimitive?.booleanOrNull ?: (animes.size >= 12))
     }
+
+    private val JsonElement?.obj get() = this as? JsonObject
+    private val JsonElement?.arr get() = this as? JsonArray
+    private val JsonElement?.str get() = (this as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
+    private val JsonElement?.bool get() = (this as? kotlinx.serialization.json.JsonPrimitive)?.booleanOrNull ?: false
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         ListPreference(screen.context).apply {
