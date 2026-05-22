@@ -200,14 +200,14 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         return preferences.getString(PREF_HOST_KEY, apiHosts[0]) ?: apiHosts[0]
     }
 
-    private fun safeGetJsonWithHeaders(urlPath: String, isPost: Boolean = false, bodyData: String? = null, token: String? = null, isDetails: Boolean = false): Pair<JsonElement, Headers>? {
+    private fun safeGetJsonWithHeaders(urlPath: String, isPost: Boolean = false, bodyData: String? = null, token: String? = null, isDetails: Boolean = false, isPlayback: Boolean = false): Pair<JsonElement, Headers>? {
         for (host in apiHosts) {
             val url = host + urlPath
             val request = if (isPost) {
                 val body = bodyData.orEmpty().toRequestBody("application/json; charset=utf-8".toMediaType())
-                POST(url, getApiHeaders(url, "POST", bodyData, token = token, isDetails = isDetails), body)
+                POST(url, getApiHeaders(url, "POST", bodyData, token = token, isDetails = isDetails, isPlayback = isPlayback), body)
             } else {
-                GET(url, getApiHeaders(url, token = token, isDetails = isDetails))
+                GET(url, getApiHeaders(url, token = token, isDetails = isDetails, isPlayback = isPlayback))
             }
             try {
                 val response = client.newCall(request).execute()
