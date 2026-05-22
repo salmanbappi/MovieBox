@@ -70,9 +70,9 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             .joinToString("") { "%02x".format(it) }
     }
 
-    // Popular: High-Quality Trending Now Ranking List
+    // Popular: High-Quality Trending API
     override fun popularAnimeRequest(page: Int): Request {
-        val url = "$apiBaseUrl/wefeed-h5api-bff/ranking-list/content?id=8610422883619422240&page=$page&perPage=18"
+        val url = "$apiBaseUrl/wefeed-h5api-bff/subject/trending?page=$page&perPage=18"
         return GET(url, headersBuilder().add("X-Client-Token", getToken()).build())
     }
 
