@@ -42,9 +42,9 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     private val apiBaseUrl = "https://h5-api.aoneroom.com"
     private val playApiBaseUrl = "https://netfilm.world"
     private val blockedKeywords = listOf(
-        "mma", "ufc", "wrestling", "boxing", "kickboxing", "muay thai", "rizin", "nfc",
-        "esports", "e-sports", "gaming", "gameplay", "pubg", "free fire", "dota",
-        "league of legends", "valorant", "fifa", "fc 24", "highlights",
+        "mma", "ufc", "wrestling", "boxing", "kickboxing", "muay thai", "rizin", "nfc", "highlights",
+        "esports", "e-sports", "gaming", "gameplay", "pubg", "free fire", "dota", "league of legends", "valorant", "fifa", "fc 24", "roblox", "minecraft",
+        "dj mix", "mixtape", "mashup", "remix", "song", "lyrics", "audio porn", "massage", "therapist",
     )
 
     private val json: Json by lazy { Injekt.get() }
@@ -82,7 +82,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     // Latest: Filtered Latest
     override fun latestUpdatesRequest(page: Int): Request {
-        val body = """{"page": $page, "perPage": 18, "sort": "LATEST"}""".toRequestBody("application/json".toMediaType())
+        val body = """{"page": $page, "perPage": 18, "sort": "Latest"}""".toRequestBody("application/json".toMediaType())
         return POST("$apiBaseUrl/wefeed-h5api-bff/subject/filter", headersBuilder().add("X-Client-Token", getToken()).build(), body)
     }
 
@@ -502,7 +502,9 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     private fun isAllowedSubject(subject: JsonObject): Boolean {
         val subjectType = subject["subjectType"]?.jsonPrimitive?.content?.toIntOrNull()
-        if (subjectType == 9) return false // sports/fight clips (MMA/wrestling-heavy noise)
+        // Strictly allow only real content types: 
+        // 4: Movie, 2: TV Series, 1: Short/Web Series
+        if (subjectType !in listOf(1, 2, 4)) return false
 
         val text = buildString {
             append(subject["title"]?.jsonPrimitive?.content.orEmpty())
