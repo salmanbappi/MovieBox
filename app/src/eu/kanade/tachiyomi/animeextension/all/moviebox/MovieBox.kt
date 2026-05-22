@@ -282,7 +282,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     // Details
     override fun animeDetailsRequest(anime: SAnime): Request {
         val id = anime.url.split("/").last()
-        val url = "$mobileApiBaseUrl/wefeed-h5api-bff/subject/get?subjectId=$id"
+        val url = "$mobileApiBaseUrl/wefeed-h5api-bff/detail?subjectId=$id"
         return GET(url, getMobileHeaders(url))
     }
 
@@ -307,15 +307,10 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val data = jsonRes["data"]?.jsonObject ?: return emptyList()
         val subject = data["subject"]?.jsonObject ?: return emptyList()
         val subjectId = subject["subjectId"]?.jsonPrimitive?.content ?: return emptyList()
-        
-        // Fetch seasons from dedicated mobile endpoint for 100% accuracy
-        val seasonsUrl = "$mobileApiBaseUrl/wefeed-h5api-bff/subject/season-info?subjectId=$subjectId"
-        val seasonsRequest = GET(seasonsUrl, getMobileHeaders(seasonsUrl))
-        val seasonsResponse = client.newCall(seasonsRequest).execute().use { it.body.string() }
-        val seasonsJson = json.parseToJsonElement(seasonsResponse).jsonObject
-        val seasons = seasonsJson["data"]?.jsonObject?.get("seasons")?.jsonArray
+        val subjectType = subject["subjectType"]?.jsonPrimitive?.content?.toIntOrNull() ?: 1
+        val seasons = data["resource"]?.jsonObject?.get("seasons")?.jsonArray
 
-        if (!seasons.isNullOrEmpty()) {
+        if (subjectType != 1 && !seasons.isNullOrEmpty()) {
             val episodes = mutableListOf<SEpisode>()
             seasons.forEach { seasonEl ->
                 val season = seasonEl.jsonObject
