@@ -24,7 +24,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import android.util.Base64
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
-import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Headers
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
@@ -130,7 +130,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         body: String?,
         timestamp: Long
     ): String {
-        val uri = HttpUrl.parse(url) ?: throw Exception("Invalid URL: $url")
+        val uri = url.toHttpUrlOrNull() ?: throw Exception("Invalid URL: $url")
         val path = uri.encodedPath
         
         val query = if (uri.querySize > 0) {
