@@ -73,16 +73,14 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val timestamp = System.currentTimeMillis()
         val contentType = if (method == "POST") "application/json; charset=utf-8" else "application/json"
         
-        val identity = getRandomIdentity()
-        
         return Headers.Builder()
-            .add("user-agent", "com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; ${identity.model}; Build/BP22.250325.006; Cronet/133.0.6876.3)")
+            .add("user-agent", "com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; sdk_gphone64_x86_64; Build/BP22.250325.006; Cronet/133.0.6876.3)")
             .add("accept", "application/json")
             .add("content-type", contentType)
             .add("connection", "keep-alive")
             .add("x-client-token", generateXClientToken(timestamp))
             .add("x-tr-signature", generateXTrSignature(method, "application/json", contentType, url, body, timestamp = timestamp))
-            .add("x-client-info", getClientInfo(identity))
+            .add("x-client-info", getClientInfo())
             .add("x-client-status", "0")
             .apply {
                 if (isDetails) add("x-play-mode", "2")
@@ -93,7 +91,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             .build()
     }
 
-    private fun getClientInfo(identity: BrandModel): String {
+    private fun getClientInfo(): String {
         return JsonObject(mapOf(
             "package_name" to kotlinx.serialization.json.JsonPrimitive("com.community.mbox.in"),
             "version_name" to kotlinx.serialization.json.JsonPrimitive("3.0.03.0529.03"),
@@ -105,30 +103,14 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             "install_store" to kotlinx.serialization.json.JsonPrimitive("ps"),
             "gaid" to kotlinx.serialization.json.JsonPrimitive("d7578036d13336cc"),
             "brand" to kotlinx.serialization.json.JsonPrimitive("google"),
-            "model" to kotlinx.serialization.json.JsonPrimitive(identity.model),
+            "model" to kotlinx.serialization.json.JsonPrimitive("sdk_gphone64_x86_64"),
             "system_language" to kotlinx.serialization.json.JsonPrimitive("en"),
             "net" to kotlinx.serialization.json.JsonPrimitive("NETWORK_WIFI"),
             "region" to kotlinx.serialization.json.JsonPrimitive("IN"),
             "timezone" to kotlinx.serialization.json.JsonPrimitive("Asia/Calcutta"),
             "sp_code" to kotlinx.serialization.json.JsonPrimitive(""),
-            "X-Play-Mode" to kotlinx.serialization.json.JsonPrimitive(if (identity.model.contains("SM-")) "1" else "2"), // Subtle variation
-            "X-Idle-Data" to kotlinx.serialization.json.JsonPrimitive("1"),
-            "X-Family-Mode" to kotlinx.serialization.json.JsonPrimitive("0"),
-            "X-Content-Mode" to kotlinx.serialization.json.JsonPrimitive("0"),
+            "X-Play-Mode" to kotlinx.serialization.json.JsonPrimitive("2"),
         )).toString()
-    }
-
-    private data class BrandModel(val brand: String, val model: String)
-
-    private fun getRandomIdentity(): BrandModel {
-        val identities = listOf(
-            BrandModel("Samsung", "SM-S918B"),
-            BrandModel("Xiaomi", "2201117TI"),
-            BrandModel("OnePlus", "LE2111"),
-            BrandModel("Google", "Pixel 8"),
-            BrandModel("Realme", "RMX3551")
-        )
-        return identities.random()
     }
 
     private fun generateXClientToken(timestamp: Long): String {
@@ -202,7 +184,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     ): String {
         val canonical = buildCanonicalString(method, accept, contentType, url, body, timestamp)
         
-        // Hard-aligned double decode logic
         val rawSecret = secretKeyDefault.removePrefix("base64Decode:")
         val secretStr = String(Base64.decode(rawSecret, Base64.DEFAULT))
         val secretBytes = Base64.decode(secretStr, Base64.DEFAULT)
@@ -276,7 +257,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     // Details
     override fun animeDetailsRequest(anime: SAnime): Request {
-        val id = anime.url.split("/").last().split("|").first()
+        val id = anime.url.substringAfterLast("/").substringBefore("|")
         val url = "${getPreferredHost()}/wefeed-mobile-bff/subject-api/get?subjectId=$id"
         return GET(url, getApiHeaders(url, isDetails = true))
     }
@@ -293,7 +274,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             result?.first
         } else json.parseToJsonElement(body)
         
-        val data = jsonRes?.obj?.get("data")?.obj ?: throw Exception("No metadata")
+        val data = jsonRes?.obj?.get("data")?.obj ?: throw Exception("No data")
         val subject = data["subject"]?.obj ?: data
 
         return SAnime.create().apply {
@@ -305,6 +286,13 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             if (!token.isNullOrBlank()) url += "|$token"
             status = SAnime.UNKNOWN
         }
+    }
+
+    override fun episodeListRequest(anime: SAnime): Request {
+        val id = anime.url.substringAfterLast("/").substringBefore("|")
+        val token = if (anime.url.contains("|")) anime.url.substringAfterLast("|") else null
+        val url = "${getPreferredHost()}/wefeed-mobile-bff/subject-api/get?subjectId=$id"
+        return GET(url, getApiHeaders(url, token = token, isDetails = true))
     }
 
     override fun episodeListParse(response: Response): List<SEpisode> {
