@@ -59,7 +59,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         "https://h5-api.aoneroom.com"
     )
 
-    private val secretKeyDefault = "NzZpUmwwN3MweFNOOWpxbUVXQXQ3OUVCSlp1bElRSXNWNjRGWnIyTw=="
+    private val secretKeyDefault = "base64Decode:NzZpUmwwN3MweFNOOWpxbUVXQXQ3OUVCSlp1bElRSXNWNjRGWnIyTw=="
 
     private val json: Json by lazy { Injekt.get() }
 
@@ -73,16 +73,16 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val timestamp = System.currentTimeMillis()
         val contentType = if (method == "POST") "application/json; charset=utf-8" else "application/json"
         
-        val (brand, model) = getRandomIdentity()
+        val identity = getRandomIdentity()
         
         return Headers.Builder()
-            .add("user-agent", "com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; $model; Build/BP22.250325.006; Cronet/133.0.6876.3)")
+            .add("user-agent", "com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; ${identity.model}; Build/BP22.250325.006; Cronet/133.0.6876.3)")
             .add("accept", "application/json")
             .add("content-type", contentType)
             .add("connection", "keep-alive")
             .add("x-client-token", generateXClientToken(timestamp))
             .add("x-tr-signature", generateXTrSignature(method, "application/json", contentType, url, body, timestamp = timestamp))
-            .add("x-client-info", getClientInfo(brand, model))
+            .add("x-client-info", getClientInfo(identity))
             .add("x-client-status", "0")
             .apply {
                 if (isDetails) add("x-play-mode", "2")
@@ -93,7 +93,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             .build()
     }
 
-    private fun getClientInfo(brand: String, model: String): String {
+    private fun getClientInfo(identity: BrandModel): String {
         return JsonObject(mapOf(
             "package_name" to kotlinx.serialization.json.JsonPrimitive("com.community.mbox.in"),
             "version_name" to kotlinx.serialization.json.JsonPrimitive("3.0.03.0529.03"),
@@ -104,27 +104,29 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             "install_ch" to kotlinx.serialization.json.JsonPrimitive("ps"),
             "install_store" to kotlinx.serialization.json.JsonPrimitive("ps"),
             "gaid" to kotlinx.serialization.json.JsonPrimitive("d7578036d13336cc"),
-            "brand" to kotlinx.serialization.json.JsonPrimitive(model), // Swapped intentionally to match CloudStream
-            "model" to kotlinx.serialization.json.JsonPrimitive(brand), // Swapped intentionally to match CloudStream
+            "brand" to kotlinx.serialization.json.JsonPrimitive("google"),
+            "model" to kotlinx.serialization.json.JsonPrimitive(identity.model),
             "system_language" to kotlinx.serialization.json.JsonPrimitive("en"),
             "net" to kotlinx.serialization.json.JsonPrimitive("NETWORK_WIFI"),
             "region" to kotlinx.serialization.json.JsonPrimitive("IN"),
             "timezone" to kotlinx.serialization.json.JsonPrimitive("Asia/Calcutta"),
             "sp_code" to kotlinx.serialization.json.JsonPrimitive(""),
-            "X-Play-Mode" to kotlinx.serialization.json.JsonPrimitive("1"),
+            "X-Play-Mode" to kotlinx.serialization.json.JsonPrimitive(if (identity.model.contains("SM-")) "1" else "2"), // Subtle variation
             "X-Idle-Data" to kotlinx.serialization.json.JsonPrimitive("1"),
             "X-Family-Mode" to kotlinx.serialization.json.JsonPrimitive("0"),
             "X-Content-Mode" to kotlinx.serialization.json.JsonPrimitive("0"),
         )).toString()
     }
 
-    private fun getRandomIdentity(): Pair<String, String> {
+    private data class BrandModel(val brand: String, val model: String)
+
+    private fun getRandomIdentity(): BrandModel {
         val identities = listOf(
-            "Samsung" to "SM-S918B",
-            "Xiaomi" to "2201117TI",
-            "OnePlus" to "LE2111",
-            "Google" to "Pixel 8",
-            "Realme" to "RMX3551"
+            BrandModel("Samsung", "SM-S918B"),
+            BrandModel("Xiaomi", "2201117TI"),
+            BrandModel("OnePlus", "LE2111"),
+            BrandModel("Google", "Pixel 8"),
+            BrandModel("Realme", "RMX3551")
         )
         return identities.random()
     }
@@ -199,7 +201,10 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         timestamp: Long
     ): String {
         val canonical = buildCanonicalString(method, accept, contentType, url, body, timestamp)
-        val secretStr = String(Base64.decode(secretKeyDefault, Base64.DEFAULT))
+        
+        // Hard-aligned double decode logic
+        val rawSecret = secretKeyDefault.removePrefix("base64Decode:")
+        val secretStr = String(Base64.decode(rawSecret, Base64.DEFAULT))
         val secretBytes = Base64.decode(secretStr, Base64.DEFAULT)
 
         val mac = Mac.getInstance("HmacMD5")
@@ -316,9 +321,11 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         
         val data = jsonRes?.obj?.get("data")?.obj ?: return emptyList()
         val mainSubjectId = data["subject"]?.obj?.get("subjectId")?.str ?: return emptyList()
+        val detailPath = data["subject"]?.obj?.get("detailPath")?.str ?: mainSubjectId
         
         val allIds = mutableListOf(mainSubjectId)
-        data["subject"]?.obj?.get("dubs")?.arr?.forEach { it.obj?.get("subjectId")?.str?.let { sid -> if (sid !in allIds) allIds.add(sid) } }
+        val dubs = data["subject"]?.obj?.get("dubs")?.arr ?: data["dubs"]?.arr
+        dubs?.forEach { it.obj?.get("subjectId")?.str?.let { sid -> if (sid !in allIds) allIds.add(sid) } }
 
         val episodes = mutableListOf<SEpisode>()
         val seasonsMap = mutableMapOf<Int, MutableSet<Int>>()
