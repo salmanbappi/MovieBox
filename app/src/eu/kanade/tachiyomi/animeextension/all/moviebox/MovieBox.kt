@@ -74,7 +74,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             .add("Accept", "application/json")
             .add("Content-Type", "application/json")
             .add("X-Client-Token", generateXClientToken(timestamp))
-            .add("X-Tr-Signature", generateXTrSignature(method, "application/json", "application/json", url, body, timestamp = timestamp))
+            .add("x-tr-signature", generateXTrSignature(method, "application/json", "application/json", url, body, timestamp = timestamp))
             .add("X-Client-Info", getClientInfo())
             .add("X-Client-Status", "0")
             .build()
@@ -189,7 +189,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     // Popular: High-Quality Trending API
     override fun popularAnimeRequest(page: Int): Request {
-        val url = "$mobileApiBaseUrl/wefeed-mobile-bff/subject/trending?page=$page&perPage=18"
+        val url = "$mobileApiBaseUrl/wefeed-mobile-bff/subject-api/trending?page=$page&perPage=18"
         return GET(url, getMobileHeaders(url))
     }
 
@@ -212,7 +212,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         }
 
         if (query.isNotBlank()) {
-            val url = "$mobileApiBaseUrl/wefeed-mobile-bff/subject/search"
+            val url = "$mobileApiBaseUrl/wefeed-mobile-bff/subject-api/search"
             val bodyData = JsonObject(
                 mapOf(
                     "keyword" to kotlinx.serialization.json.JsonPrimitive(query),
@@ -266,7 +266,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             bodyMap["country"] = kotlinx.serialization.json.JsonPrimitive(countryFilter.toId())
         }
 
-        val url = "$mobileApiBaseUrl/wefeed-mobile-bff/subject/filter"
+        val url = "$mobileApiBaseUrl/wefeed-mobile-bff/subject-api/filter"
         val bodyData = JsonObject(bodyMap).toString()
         val body = bodyData.toRequestBody("application/json".toMediaType())
         return POST(url, getMobileHeaders(url, "POST", bodyData), body)
@@ -277,32 +277,35 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     // Details
+    override fun animeDetailsRequest(anime: SAnime): Request {
+        val id = anime.url.split("/").last()
+        val url = "$mobileApiBaseUrl/wefeed-mobile-bff/subject-api/get?subjectId=$id"
+        return GET(url, getMobileHeaders(url))
+    }
+
     override fun animeDetailsParse(response: Response): SAnime {
-        val document = response.asJsoup()
-        val scriptData = document.selectFirst("script[id=__NUXT_DATA__]")?.data()
-            ?: throw Exception("Could not find Nuxt data")
-        
-        val nuxtData = json.parseToJsonElement(scriptData).jsonArray
-        val resolver = NuxtResolver(nuxtData)
-        val subject = resolver.findSubject() ?: throw Exception("Subject not found in Nuxt data")
-        
+        val bodyString = response.body.string()
+        val jsonRes = json.parseToJsonElement(bodyString).jsonObject
+        val data = jsonRes["data"]?.jsonObject ?: throw Exception("Details not found")
+        val subject = data["subject"]?.jsonObject ?: throw Exception("Subject not found")
+
         return SAnime.create().apply {
-            title = resolver.getString(subject["title"]) ?: ""
-            description = resolver.getString(subject["description"])
-            genre = resolver.getString(subject["genre"])
-            author = resolver.getString(subject["countryName"])
+            title = subject["title"]?.jsonPrimitive?.content ?: ""
+            description = subject["description"]?.jsonPrimitive?.content
+            genre = subject["genre"]?.jsonPrimitive?.content
+            author = subject["countryName"]?.jsonPrimitive?.content
             status = SAnime.UNKNOWN
         }
     }
 
     override fun episodeListParse(response: Response): List<SEpisode> {
-        val detailPath = java.net.URL(response.request.url.toString()).path.split("/").lastOrNull { it.isNotEmpty() }
-            ?: return emptyList()
-        val detailData = fetchDetailData(detailPath) ?: return emptyList()
-        val subject = detailData["subject"]?.jsonObject ?: return emptyList()
+        val bodyString = response.body.string()
+        val jsonRes = json.parseToJsonElement(bodyString).jsonObject
+        val data = jsonRes["data"]?.jsonObject ?: return emptyList()
+        val subject = data["subject"]?.jsonObject ?: return emptyList()
         val subjectId = subject["subjectId"]?.jsonPrimitive?.content ?: return emptyList()
         val subjectType = subject["subjectType"]?.jsonPrimitive?.content?.toIntOrNull() ?: 1
-        val seasons = detailData["resource"]?.jsonObject?.get("seasons")?.jsonArray
+        val seasons = data["resource"]?.jsonObject?.get("seasons")?.jsonArray
 
         if (subjectType != 1 && !seasons.isNullOrEmpty()) {
             val episodes = mutableListOf<SEpisode>()
@@ -316,7 +319,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                     episodes.add(SEpisode.create().apply {
                         name = "Season $seNum - Episode $i"
                         episode_number = i.toFloat()
-                        url = "$subjectId&se=$seNum&ep=$i&detailPath=$detailPath"
+                        url = "$subjectId&se=$seNum&ep=$i"
                         date_upload = System.currentTimeMillis()
                     })
                 }
@@ -327,7 +330,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         return listOf(
             SEpisode.create().apply {
                 name = "Full Movie"
-                url = "$subjectId&se=0&ep=0&detailPath=$detailPath"
+                url = "$subjectId&se=0&ep=0"
                 date_upload = System.currentTimeMillis()
             },
         )
@@ -470,18 +473,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {}
 
-    private fun fetchDetailData(detailPath: String): JsonObject? {
-        val url = "$apiBaseUrl/wefeed-h5api-bff/detail?detailPath=$detailPath"
-        val request = GET(url, headersBuilder()
-            .add("X-Client-Token", getToken())
-            .add("X-Client-Info", """{"timezone":"${TimeZone.getDefault().id}"}""")
-            .build())
-        return client.newCall(request).execute().use { res ->
-            val body = res.body.string()
-            json.parseToJsonElement(body).jsonObject["data"]?.jsonObject
-        }
-    }
-
     private fun parseVideoItems(data: JsonObject, referer: String): List<Video> {
         val videos = mutableListOf<Video>()
         val subtitleTracks = fetchSubtitleTracks(data, referer)
@@ -561,12 +552,14 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             val subject = if (obj.containsKey("subject")) obj["subject"]?.jsonObject else obj
             if (subject == null || !isAllowedSubject(subject)) return@mapNotNull null
 
-            val detailPath = subject["detailPath"]?.jsonPrimitive?.content.orEmpty()
-            if (detailPath.isBlank()) return@mapNotNull null
+            val id = subject["subjectId"]?.jsonPrimitive?.content 
+                ?: subject["id"]?.jsonPrimitive?.content 
+                ?: subject["detailPath"]?.jsonPrimitive?.content 
+                ?: return@mapNotNull null
 
             SAnime.create().apply {
                 title = subject["title"]?.jsonPrimitive?.content ?: ""
-                url = "/movies/$detailPath"
+                url = "/movies/$id"
                 thumbnail_url = subject["cover"]?.jsonObject?.get("url")?.jsonPrimitive?.content
             }
         }
