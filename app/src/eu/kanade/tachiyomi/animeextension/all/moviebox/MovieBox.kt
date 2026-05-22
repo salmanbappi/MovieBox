@@ -42,9 +42,9 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     private val apiBaseUrl = "https://h5-api.aoneroom.com"
     private val playApiBaseUrl = "https://netfilm.world"
     private val blockedKeywords = listOf(
-        "mma", "ufc", "wrestling", "boxing", "kickboxing", "muay thai", "rizin",
+        "mma", "ufc", "wrestling", "boxing", "kickboxing", "muay thai", "rizin", "nfc",
         "esports", "e-sports", "gaming", "gameplay", "pubg", "free fire", "dota",
-        "league of legends", "valorant", "fifa", "fc 24",
+        "league of legends", "valorant", "fifa", "fc 24", "highlights",
     )
 
     private val json: Json by lazy { Injekt.get() }
@@ -116,6 +116,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         }
 
         val typeFilter = filters.find { it is TypeFilter } as? TypeFilter
+        val languageFilter = filters.find { it is LanguageFilter } as? LanguageFilter
         val sortFilter = filters.find { it is SortFilter } as? SortFilter
         val genreFilter = filters.find { it is GenreFilter } as? GenreFilter
         val yearFilter = filters.find { it is YearFilter } as? YearFilter
@@ -128,12 +129,23 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         )
 
         if (typeFilter != null && typeFilter.state > 0) {
-            bodyMap["classify"] = kotlinx.serialization.json.JsonPrimitive(typeFilter.toId())
+            val typeId = typeFilter.toId()
+            if (typeId == "ANIMATION") {
+                bodyMap["channelId"] = kotlinx.serialization.json.JsonPrimitive(2)
+                bodyMap["genre"] = kotlinx.serialization.json.JsonPrimitive("Animation")
+            } else {
+                bodyMap["channelId"] = kotlinx.serialization.json.JsonPrimitive(typeId.toInt())
+            }
+        }
+        if (languageFilter != null && languageFilter.state > 0) {
+            bodyMap["classify"] = kotlinx.serialization.json.JsonPrimitive(languageFilter.toId())
         }
         if (sortFilter != null) {
             bodyMap["sort"] = kotlinx.serialization.json.JsonPrimitive(sortFilter.toId())
         }
         if (genreFilter != null && genreFilter.state > 0) {
+            // Genre filter might be partially applied by Animated Series type, 
+            // but user-selected genre should take precedence.
             bodyMap["genre"] = kotlinx.serialization.json.JsonPrimitive(genreFilter.toId())
         }
         if (yearFilter != null && yearFilter.state > 0) {
@@ -267,6 +279,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     override fun getFilterList(): AnimeFilterList = AnimeFilterList(
         SortFilter(),
         TypeFilter(),
+        LanguageFilter(),
         GenreFilter(),
         YearFilter(),
         CountryFilter(),
@@ -276,42 +289,43 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     private class SortFilter : AnimeFilter.Select<String>("Sort", arrayOf("Popular", "Latest", "IMDb Rating")) {
         fun toId() = when (state) {
-            1 -> "LATEST"
-            2 -> "IMDB_RATING"
-            else -> "POPULAR"
+            1 -> "Latest"
+            2 -> "Rating"
+            else -> "Hottest"
         }
     }
 
     private class TypeFilter : AnimeFilter.Select<String>("Type", arrayOf(
-        "All", "Movie", "TV Series", "Animated Series", "Cinema", "Hot Short TV", "Bollywood", "South Indian", "Hollywood", "Asian", "Bengali dub", "Hindi dub"
+        "All", "Movie", "TV Series", "Animated Series", "Short TV"
     )) {
         fun toId() = when (state) {
-            1 -> "Movie"
-            2 -> "TV Series"
-            3 -> "Animated Series"
-            4 -> "Cinema"
-            5 -> "Hot Short TV"
-            6 -> "Bollywood"
-            7 -> "South Indian"
-            8 -> "Hollywood"
-            9 -> "Asian"
-            10 -> "Bengali dub"
-            11 -> "Hindi dub"
-            else -> "All"
+            1 -> "4" // Movie
+            2 -> "2" // TV Series
+            3 -> "ANIMATION"
+            4 -> "1" // Short TV
+            else -> ""
         }
     }
 
-    private class GenreFilter : AnimeFilter.Select<String>("Genre", arrayOf(
-        "All", "Action", "Adventure", "Comedy", "Crime", "Drama", "Fantasy", "Horror", "Mystery", "Romance", "Sci-Fi", "Thriller", "War", "Western", "Animation", "Biography", "Documentary", "Family", "History", "Music", "Musical", "Sport"
+    private class LanguageFilter : AnimeFilter.Select<String>("Language/Dub", arrayOf(
+        "All", "English Dub", "Hindi Dub", "Bengali Dub", "French Dub", "Urdu Dub", "Tamil Dub", "Telugu Dub", "Punjabi Dub", "Malayalam Dub", "Kannada Dub", "Arabic Dub", "Tagalog Dub", "Indonesian Dub", "Russian Dub", "Spanish Dub"
     )) {
         fun toId() = if (state == 0) "All" else values[state]
     }
 
-    private class YearFilter : AnimeFilter.Select<String>("Year", arrayOf("All") + (2026 downTo 1990).map { it.toString() }.toTypedArray()) {
+    private class GenreFilter : AnimeFilter.Select<String>("Genre", arrayOf(
+        "All", "Action", "Adventure", "Animation", "Biography", "Comedy", "Crime", "Documentary", "Drama", "Family", "Fantasy", "Film-Noir", "Game-Show", "History", "Horror", "Music", "Musical", "Mystery", "News", "Reality-TV", "Romance", "Sci-Fi", "Short", "Sport", "Talk-Show", "Thriller", "War", "Western"
+    )) {
         fun toId() = if (state == 0) "All" else values[state]
     }
 
-    private class CountryFilter : AnimeFilter.Select<String>("Country", arrayOf("All", "United States", "India", "China", "Korea", "Japan", "United Kingdom", "France", "Germany", "Canada", "Spain", "Italy", "Turkey")) {
+    private class YearFilter : AnimeFilter.Select<String>("Year", arrayOf("All") + (2026 downTo 2020).map { it.toString() }.toTypedArray() + arrayOf("2010s", "2000s", "1990s", "1980s")) {
+        fun toId() = if (state == 0) "All" else values[state]
+    }
+
+    private class CountryFilter : AnimeFilter.Select<String>("Country", arrayOf(
+        "All", "United States", "India", "China", "United Kingdom", "France", "Germany", "Indonesia", "Iraq", "Italy", "Mexico", "Nigeria", "Pakistan", "Philippines", "Russia", "Saudi Arabia", "South Africa", "Spain", "Syria", "Thailand", "Malaysia"
+    )) {
         fun toId() = if (state == 0) "All" else values[state]
     }
 
