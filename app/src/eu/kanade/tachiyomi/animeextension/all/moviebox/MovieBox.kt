@@ -204,6 +204,10 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         return null
     }
 
+    override fun latestUpdatesRequest(page: Int): Request = throw Exception("Not used")
+
+    override fun latestUpdatesParse(response: Response): AnimesPage = throw Exception("Not used")
+
     // Popular
     override fun popularAnimeRequest(page: Int): Request {
         val url = "${getPreferredHost()}/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=4516404531735022304&page=$page&perPage=18"
