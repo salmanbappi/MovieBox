@@ -239,7 +239,9 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     override fun popularAnimeParse(response: Response): AnimesPage {
         val body = response.body.string()
         val jsonRes = if (!body.trim().startsWith("{")) {
-            safeGetJsonWithHeaders("/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=4516404531735022304&page=1&perPage=18")?.first
+            val url = response.request.url.toString()
+            val path = "/" + url.substringAfter(".com/").substringAfter(".world/")
+            safeGetJsonVerified(path)?.first
         } else json.parseToJsonElement(body)
         val data = jsonRes?.obj?.get("data")?.obj ?: return AnimesPage(emptyList(), false)
         return parseSubjectListPage(data)
@@ -247,18 +249,39 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     // Search
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
+        val host = getPreferredHost()
         if (query.isNotBlank()) {
-            val host = getPreferredHost()
             val path = if (host.contains("api3")) "/wefeed-mobile-bff/subject-api/search/v2" else "/wefeed-h5api-bff/subject/search"
             val url = "$host$path"
             val bodyData = """{"page":$page,"perPage":20,"keyword":"$query"}"""
             val body = bodyData.toRequestBody("application/json; charset=utf-8".toMediaType())
             return POST(url, getApiHeaders(url, "POST", bodyData), body)
         }
-        return popularAnimeRequest(page)
+        val rankingFilter = filters.find { it is RankingFilter } as? RankingFilter
+        val rankingId = if (rankingFilter != null && rankingFilter.state > 0) rankingFilter.toId() else "4516404531735022304"
+        val path = if (host.contains("api3")) "/wefeed-mobile-bff/tab/ranking-list" else "/wefeed-h5api-bff/ranking-list/content"
+        val url = "$host$path?tabId=0&categoryType=$rankingId&page=$page&perPage=18"
+        return GET(url, getApiHeaders(url))
     }
 
-    override fun searchAnimeParse(response: Response): AnimesPage = popularAnimeParse(response)
+    override fun searchAnimeParse(response: Response): AnimesPage {
+        val body = response.body.string()
+        val jsonRes = if (!body.trim().startsWith("{")) {
+            val url = response.request.url.toString()
+            val path = "/" + url.substringAfter(".com/").substringAfter(".world/")
+            val requestBody = response.request.body
+            if (requestBody != null) {
+                val buffer = okio.Buffer()
+                requestBody.writeTo(buffer)
+                val bodyData = buffer.readUtf8()
+                safeGetJsonVerified(path, isPost = true, bodyData = bodyData)?.first
+            } else {
+                safeGetJsonVerified(path)?.first
+            }
+        } else json.parseToJsonElement(body)
+        val data = jsonRes?.obj?.get("data")?.obj ?: return AnimesPage(emptyList(), false)
+        return parseSubjectListPage(data)
+    }
 
     // Details
     override fun animeDetailsRequest(anime: SAnime): Request {
@@ -449,7 +472,13 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             val id = subject["subjectId"]?.str ?: subject["id"]?.str ?: return@mapNotNull null
             SAnime.create().apply { title = subject["title"]?.str ?: ""; url = "/movies/$id"; thumbnail_url = subject["cover"]?.obj?.get("url")?.str }
         }
-        return AnimesPage(animes, data["pager"]?.obj?.get("hasMore")?.bool ?: (animes.size >= 12))
+        
+        val pager = data["pager"]?.obj
+        val hasMore = pager?.get("hasMore")?.bool 
+            ?: (pager?.get("nextPage")?.str?.isNotBlank() ?: false)
+            ?: (animes.isNotEmpty())
+            
+        return AnimesPage(animes, hasMore)
     }
 
     private val JsonElement?.obj get() = this as? JsonObject
