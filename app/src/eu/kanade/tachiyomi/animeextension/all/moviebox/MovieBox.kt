@@ -1,5 +1,8 @@
 package eu.kanade.tachiyomi.animeextension.all.moviebox
 
+import android.app.Application
+import android.content.SharedPreferences
+import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilter
@@ -37,14 +40,19 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     override val supportsLatest = false
     override val id: Long = 3508466391484419848L
 
-    // Failover host list
+    private val preferences: SharedPreferences by lazy {
+        Injekt.get<Application>().getSharedPreferences("source_$id", 0)
+    }
+
     private val apiHosts = listOf(
-        "https://h5-api.aoneroom.com",
-        "https://netfilm.world"
+        "https://netfilm.world",
+        "https://h5-api.aoneroom.com"
     )
     
-    private var currentApiHost = apiHosts[0]
-    private val playApiBaseUrl = "https://netfilm.world"
+    private val apiSources = listOf(
+        "mb_call_hola",
+        "MB_Website"
+    )
 
     private val blockedKeywords = listOf(
         "mma", "ufc", "wrestling", "boxing", "kickboxing", "muay thai", "rizin", "nfc", "highlights",
@@ -60,10 +68,11 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         .add("Origin", "https://moviebox.ph")
         .add("Accept", "application/json")
         .add("X-Request-Lang", "en")
-        .add("X-Source", "mb_call_hola")
 
-    private fun getApiHeaders(): Headers {
+    private fun getApiHeaders(source: String = ""): Headers {
+        val preferredSource = source.ifBlank { preferences.getString(PREF_SOURCE_KEY, "mb_call_hola") ?: "mb_call_hola" }
         return headersBuilder()
+            .set("X-Source", preferredSource)
             .add("X-Client-Token", getToken())
             .add("X-Client-Info", """{"timezone":"${TimeZone.getDefault().id}"}""")
             .build()
@@ -81,49 +90,53 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             .joinToString("") { "%02x".format(it) }
     }
 
+    private fun getPreferredHost(): String {
+        return preferences.getString(PREF_HOST_KEY, apiHosts[0]) ?: apiHosts[0]
+    }
+
     private fun safeGetJson(urlPath: String, isPost: Boolean = false, bodyData: String? = null): JsonElement {
         var lastError: Exception? = null
         
         for (host in apiHosts) {
-            val url = host + urlPath
-            val request = if (isPost) {
-                val body = bodyData.orEmpty().toRequestBody("application/json; charset=utf-8".toMediaType())
-                POST(url, getApiHeaders(), body)
-            } else {
-                GET(url, getApiHeaders())
-            }
-            
-            try {
-                val response = client.newCall(request).execute()
-                val body = response.body.string()
-                
-                if (body.contains("<html", ignoreCase = true) || body.contains("<!DOCTYPE", ignoreCase = true)) {
-                    // Host returned HTML, try next one
-                    continue
+            for (source in apiSources) {
+                val url = host + urlPath
+                val request = if (isPost) {
+                    val body = bodyData.orEmpty().toRequestBody("application/json; charset=utf-8".toMediaType())
+                    POST(url, getApiHeaders(source = source), body)
+                } else {
+                    GET(url, getApiHeaders(source = source))
                 }
                 
-                currentApiHost = host // Update current successful host
-                return json.parseToJsonElement(body)
-            } catch (e: Exception) {
-                lastError = e
-                continue
+                try {
+                    val response = client.newCall(request).execute()
+                    val body = response.body.string()
+                    
+                    if (body.contains("<html", ignoreCase = true) || body.contains("<!DOCTYPE", ignoreCase = true)) {
+                        continue
+                    }
+                    
+                    return json.parseToJsonElement(body)
+                } catch (e: Exception) {
+                    lastError = e
+                    continue
+                }
             }
         }
         
-        throw lastError ?: Exception("The server returned an HTML page or was unreachable on all verified mirrors. This usually happens if your network/ISP is blocking the site. Try using a DNS like 1.1.1.1 or a VPN.")
+        throw lastError ?: Exception("The server returned an HTML page or was unreachable on all verified mirrors. This usually happens if your network/ISP is blocking the site. Try changing the 'API Host' in extension settings or use a VPN.")
     }
 
     // Popular: High-Quality Trending API
     override fun popularAnimeRequest(page: Int): Request {
-        val url = "$currentApiHost/wefeed-h5api-bff/subject/trending?page=$page&perPage=18"
+        val url = "${getPreferredHost()}/wefeed-h5api-bff/subject/trending?page=$page&perPage=18"
         return GET(url, getApiHeaders())
     }
 
     override fun popularAnimeParse(response: Response): AnimesPage {
         val body = response.body.string()
         val jsonRes = if (body.contains("<html", ignoreCase = true)) {
-            // If primary host failed (e.g. initial request), use failover fetch
-            safeGetJson("/wefeed-h5api-bff/subject/trending?page=1&perPage=18")
+            val url = response.request.url.toString().substringAfter(".com").substringAfter(".world")
+            safeGetJson(url)
         } else json.parseToJsonElement(body)
         
         return parseSubjectListPage(jsonRes.jsonObject)
@@ -139,30 +152,11 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val rankingFilter = filters.find { it is RankingFilter } as? RankingFilter
         if (query.isEmpty() && rankingFilter != null && rankingFilter.state > 0) {
             val rankingId = rankingFilter.toId()
-            val url = "$currentApiHost/wefeed-h5api-bff/ranking-list/content?id=$rankingId&page=$page&perPage=18"
+            val url = "${getPreferredHost()}/wefeed-h5api-bff/ranking-list/content?id=$rankingId&page=$page&perPage=18"
             return GET(url, getApiHeaders())
         }
 
-        if (query.isNotBlank()) {
-            val url = "$currentApiHost/wefeed-h5api-bff/subject/search"
-            val bodyData = JsonObject(
-                mapOf(
-                    "keyword" to kotlinx.serialization.json.JsonPrimitive(query),
-                    "page" to kotlinx.serialization.json.JsonPrimitive(page),
-                    "perPage" to kotlinx.serialization.json.JsonPrimitive(18),
-                ),
-            ).toString()
-            val body = bodyData.toRequestBody("application/json; charset=utf-8".toMediaType())
-            return POST(url, getApiHeaders(), body)
-        }
-
-        val typeFilter = filters.find { it is TypeFilter } as? TypeFilter
-        val languageFilter = filters.find { it is LanguageFilter } as? LanguageFilter
-        val minRateFilter = filters.find { it is MinRateFilter } as? MinRateFilter
-        val sortFilter = filters.find { it is SortFilter } as? SortFilter
-        val genreFilter = filters.find { it is GenreFilter } as? GenreFilter
-        val yearFilter = filters.find { it is YearFilter } as? YearFilter
-        val countryFilter = filters.find { it is CountryFilter } as? CountryFilter
+        val url = if (query.isNotBlank()) "${getPreferredHost()}/wefeed-h5api-bff/subject/search" else "${getPreferredHost()}/wefeed-h5api-bff/subject/filter"
         
         val bodyMap = mutableMapOf<String, JsonElement>(
             "keyword" to kotlinx.serialization.json.JsonPrimitive(query),
@@ -170,35 +164,44 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             "perPage" to kotlinx.serialization.json.JsonPrimitive(18)
         )
 
-        if (typeFilter != null && typeFilter.state > 0) {
-            val typeId = typeFilter.toId()
-            if (typeId == "ANIMATION") {
-                bodyMap["channelId"] = kotlinx.serialization.json.JsonPrimitive(2)
-                bodyMap["genre"] = kotlinx.serialization.json.JsonPrimitive("Animation")
-            } else {
-                bodyMap["channelId"] = kotlinx.serialization.json.JsonPrimitive(typeId.toInt())
+        if (query.isEmpty()) {
+            val typeFilter = filters.find { it is TypeFilter } as? TypeFilter
+            val languageFilter = filters.find { it is LanguageFilter } as? LanguageFilter
+            val minRateFilter = filters.find { it is MinRateFilter } as? MinRateFilter
+            val sortFilter = filters.find { it is SortFilter } as? SortFilter
+            val genreFilter = filters.find { it is GenreFilter } as? GenreFilter
+            val yearFilter = filters.find { it is YearFilter } as? YearFilter
+            val countryFilter = filters.find { it is CountryFilter } as? CountryFilter
+
+            if (typeFilter != null && typeFilter.state > 0) {
+                val typeId = typeFilter.toId()
+                if (typeId == "ANIMATION") {
+                    bodyMap["channelId"] = kotlinx.serialization.json.JsonPrimitive(2)
+                    bodyMap["genre"] = kotlinx.serialization.json.JsonPrimitive("Animation")
+                } else {
+                    bodyMap["channelId"] = kotlinx.serialization.json.JsonPrimitive(typeId.toInt())
+                }
+            }
+            if (languageFilter != null && languageFilter.state > 0) {
+                bodyMap["classify"] = kotlinx.serialization.json.JsonPrimitive(languageFilter.toId())
+            }
+            if (minRateFilter != null && minRateFilter.state > 0) {
+                bodyMap["rate"] = kotlinx.serialization.json.JsonPrimitive(minRateFilter.toId())
+            }
+            if (sortFilter != null && sortFilter.state > 0) {
+                bodyMap["sort"] = kotlinx.serialization.json.JsonPrimitive(sortFilter.toId())
+            }
+            if (genreFilter != null && genreFilter.state > 0) {
+                bodyMap["genre"] = kotlinx.serialization.json.JsonPrimitive(genreFilter.toId())
+            }
+            if (yearFilter != null && yearFilter.state > 0) {
+                bodyMap["year"] = kotlinx.serialization.json.JsonPrimitive(yearFilter.toId())
+            }
+            if (countryFilter != null && countryFilter.state > 0) {
+                bodyMap["country"] = kotlinx.serialization.json.JsonPrimitive(countryFilter.toId())
             }
         }
-        if (languageFilter != null && languageFilter.state > 0) {
-            bodyMap["classify"] = kotlinx.serialization.json.JsonPrimitive(languageFilter.toId())
-        }
-        if (minRateFilter != null && minRateFilter.state > 0) {
-            bodyMap["rate"] = kotlinx.serialization.json.JsonPrimitive(minRateFilter.toId())
-        }
-        if (sortFilter != null && sortFilter.state > 0) {
-            bodyMap["sort"] = kotlinx.serialization.json.JsonPrimitive(sortFilter.toId())
-        }
-        if (genreFilter != null && genreFilter.state > 0) {
-            bodyMap["genre"] = kotlinx.serialization.json.JsonPrimitive(genreFilter.toId())
-        }
-        if (yearFilter != null && yearFilter.state > 0) {
-            bodyMap["year"] = kotlinx.serialization.json.JsonPrimitive(yearFilter.toId())
-        }
-        if (countryFilter != null && countryFilter.state > 0) {
-            bodyMap["country"] = kotlinx.serialization.json.JsonPrimitive(countryFilter.toId())
-        }
 
-        val url = "$currentApiHost/wefeed-h5api-bff/subject/filter"
         val bodyData = JsonObject(bodyMap).toString()
         val body = bodyData.toRequestBody("application/json; charset=utf-8".toMediaType())
         return POST(url, getApiHeaders(), body)
@@ -207,8 +210,9 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     override fun searchAnimeParse(response: Response): AnimesPage {
         val body = response.body.string()
         val jsonRes = if (body.contains("<html", ignoreCase = true)) {
-            // Logic for search failover is more complex due to POST body, using simplified parse for now
-            throw Exception("Received HTML. Try reloading or checking your connection.")
+            val url = response.request.url.toString().substringAfter(".com").substringAfter(".world")
+            // Re-executing POST is complex in failover, throw clear error
+            throw Exception("Received HTML. Please change 'API Host' in extension settings.")
         } else json.parseToJsonElement(body)
         
         return parseSubjectListPage(jsonRes.jsonObject)
@@ -218,7 +222,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     override fun animeDetailsRequest(anime: SAnime): Request {
         val id = anime.url.split("/").last()
         val param = if (id.all { it.isDigit() }) "subjectId" else "detailPath"
-        val url = "$currentApiHost/wefeed-h5api-bff/detail?$param=$id"
+        val url = "${getPreferredHost()}/wefeed-h5api-bff/detail?$param=$id"
         return GET(url, getApiHeaders())
     }
 
@@ -293,7 +297,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val ep = parts.find { it.startsWith("ep=") }?.split("=")?.get(1) ?: "0"
         val detailPath = parts.find { it.startsWith("detailPath=") }?.split("=")?.get(1) ?: ""
         
-        val url = "$currentApiHost/wefeed-h5api-bff/subject/play?subjectId=$subjectId&se=$se&ep=$ep&detailPath=$detailPath"
+        val url = "${getPreferredHost()}/wefeed-h5api-bff/subject/play?subjectId=$subjectId&se=$se&ep=$ep&detailPath=$detailPath"
         return GET(url, getApiHeaders())
     }
 
@@ -354,10 +358,97 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         return blockedKeywords.none { title.contains(it) }
     }
 
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        val hostPref = ListPreference(screen.context).apply {
+            key = PREF_HOST_KEY
+            title = "API Host"
+            entries = arrayOf("Netfilm (Mirror)", "Aoneroom (Official)")
+            entryValues = apiHosts.toTypedArray()
+            setDefaultValue(apiHosts[0])
+            summary = "%s"
+        }
+        val sourcePref = ListPreference(screen.context).apply {
+            key = PREF_SOURCE_KEY
+            title = "Traffic Source"
+            entries = arrayOf("Stealth (Bypass)", "Website (Standard)")
+            entryValues = apiSources.toTypedArray()
+            setDefaultValue(apiSources[0])
+            summary = "%s"
+        }
+        screen.addPreference(hostPref)
+        screen.addPreference(sourcePref)
+    }
+
+    private fun parseVideoItems(data: JsonObject, referer: String): List<Video> {
+        val videos = mutableListOf<Video>()
+        val subtitleTracks = fetchSubtitleTracks(data, referer)
+        val videoHeaders = Headers.headersOf(
+            "Referer", referer,
+            "Origin", playApiBaseUrl,
+            "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        )
+        data["hls"]?.jsonArray?.forEach { element ->
+            val obj = element.jsonObject
+            val rawUrl = obj["url"]?.jsonPrimitive?.content ?: return@forEach
+            val url = rawUrl.normalizeVideoUrl()
+            val quality = (obj["resolutions"]?.jsonPrimitive?.content ?: "Auto") + "P (HLS)"
+            videos.add(Video(url, quality, url, headers = videoHeaders, subtitleTracks = subtitleTracks))
+        }
+        data["streams"]?.jsonArray?.forEach { element ->
+            val obj = element.jsonObject
+            val rawUrl = obj["url"]?.jsonPrimitive?.content ?: return@forEach
+            val url = rawUrl.normalizeVideoUrl()
+            val quality = (obj["resolutions"]?.jsonPrimitive?.content ?: "Auto") + "P (MP4)"
+            videos.add(Video(url, quality, url, headers = videoHeaders, subtitleTracks = subtitleTracks))
+        }
+        return videos
+    }
+
+    private fun fetchSubtitleTracks(data: JsonObject, referer: String): List<Track> {
+        val streams = data["streams"]?.jsonArray.orEmpty()
+        val streamId = streams.firstOrNull()?.jsonObject?.get("id")?.jsonPrimitive?.content ?: ""
+        
+        val parts = java.net.URL(referer).query?.split("&").orEmpty()
+        val subjectId = parts.find { it.startsWith("id=") }?.split("=")?.get(1) 
+            ?: parts.find { it.startsWith("subjectId=") }?.split("=")?.get(1)
+            ?: ""
+
+        if (streamId.isBlank() || subjectId.isBlank()) return emptyList()
+
+        val url = "${getPreferredHost()}/wefeed-h5api-bff/subject/get-stream-captions?subjectId=$subjectId&streamId=$streamId"
+        
+        return runCatching {
+            val req = GET(url, getApiHeaders())
+            val body = client.newCall(req).execute().body.string()
+            val jsonRes = json.parseToJsonElement(body).jsonObject
+            val captions = jsonRes["data"]?.jsonObject?.get("extCaptions")?.jsonArray.orEmpty()
+            captions.mapNotNull { cap ->
+                val obj = cap.jsonObject
+                val capUrl = obj["url"]?.jsonPrimitive?.content.orEmpty().normalizeVideoUrl()
+                if (capUrl.isBlank()) return@mapNotNull null
+                val lang = obj["lanName"]?.jsonPrimitive?.content
+                    ?: obj["lan"]?.jsonPrimitive?.content
+                    ?: "Unknown"
+                Track(capUrl, lang)
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun String.normalizeVideoUrl(): String {
+        val value = this
+        return when {
+            value.startsWith("https://") || value.startsWith("http://") -> value
+            value.startsWith("https:") -> value.replaceFirst("https:", "https://")
+            value.startsWith("http:") -> value.replaceFirst("http:", "http://")
+            else -> value
+        }
+    }
+
     override fun getFilterList(): AnimeFilterList = AnimeFilterList(
         SortFilter(),
         TypeFilter(),
         LanguageFilter(),
+        MinRateFilter(),
         GenreFilter(),
         YearFilter(),
         CountryFilter(),
@@ -457,70 +548,8 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         }
     }
 
-    override fun setupPreferenceScreen(screen: PreferenceScreen) {}
-
-    private fun parseVideoItems(data: JsonObject, referer: String): List<Video> {
-        val videos = mutableListOf<Video>()
-        val subtitleTracks = fetchSubtitleTracks(data, referer)
-        val videoHeaders = Headers.headersOf(
-            "Referer", referer,
-            "Origin", playApiBaseUrl,
-            "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        )
-        data["hls"]?.jsonArray?.forEach { element ->
-            val obj = element.jsonObject
-            val rawUrl = obj["url"]?.jsonPrimitive?.content ?: return@forEach
-            val url = rawUrl.normalizeVideoUrl()
-            val quality = (obj["resolutions"]?.jsonPrimitive?.content ?: "Auto") + "P (HLS)"
-            videos.add(Video(url, quality, url, headers = videoHeaders, subtitleTracks = subtitleTracks))
-        }
-        data["streams"]?.jsonArray?.forEach { element ->
-            val obj = element.jsonObject
-            val rawUrl = obj["url"]?.jsonPrimitive?.content ?: return@forEach
-            val url = rawUrl.normalizeVideoUrl()
-            val quality = (obj["resolutions"]?.jsonPrimitive?.content ?: "Auto") + "P (MP4)"
-            videos.add(Video(url, quality, url, headers = videoHeaders, subtitleTracks = subtitleTracks))
-        }
-        return videos
-    }
-
-    private fun fetchSubtitleTracks(data: JsonObject, referer: String): List<Track> {
-        val streams = data["streams"]?.jsonArray.orEmpty()
-        val streamId = streams.firstOrNull()?.jsonObject?.get("id")?.jsonPrimitive?.content ?: ""
-        
-        val parts = java.net.URL(referer).query?.split("&").orEmpty()
-        val subjectId = parts.find { it.startsWith("id=") }?.split("=")?.get(1) 
-            ?: parts.find { it.startsWith("subjectId=") }?.split("=")?.get(1)
-            ?: ""
-
-        if (streamId.isBlank() || subjectId.isBlank()) return emptyList()
-
-        val url = "$currentApiHost/wefeed-h5api-bff/subject/get-stream-captions?subjectId=$subjectId&streamId=$streamId"
-        
-        return runCatching {
-            val req = GET(url, getApiHeaders())
-            val body = client.newCall(req).execute().body.string()
-            val jsonRes = json.parseToJsonElement(body).jsonObject
-            val captions = jsonRes["data"]?.jsonObject?.get("extCaptions")?.jsonArray.orEmpty()
-            captions.mapNotNull { cap ->
-                val obj = cap.jsonObject
-                val capUrl = obj["url"]?.jsonPrimitive?.content.orEmpty().normalizeVideoUrl()
-                if (capUrl.isBlank()) return@mapNotNull null
-                val lang = obj["lanName"]?.jsonPrimitive?.content
-                    ?: obj["lan"]?.jsonPrimitive?.content
-                    ?: "Unknown"
-                Track(capUrl, lang)
-            }
-        }.getOrDefault(emptyList())
-    }
-
-    private fun String.normalizeVideoUrl(): String {
-        val value = this
-        return when {
-            value.startsWith("https://") || value.startsWith("http://") -> value
-            value.startsWith("https:") -> value.replaceFirst("https:", "https://")
-            value.startsWith("http:") -> value.replaceFirst("http:", "http://")
-            else -> value
-        }
+    companion object {
+        private const val PREF_HOST_KEY = "api_host"
+        private const val PREF_SOURCE_KEY = "api_source"
     }
 }
