@@ -80,6 +80,11 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         return parseSubjectListPage(response)
     }
 
+    // Latest: Disabled
+    override fun latestUpdatesRequest(page: Int): Request = throw Exception("Not used")
+
+    override fun latestUpdatesParse(response: Response): AnimesPage = throw Exception("Not used")
+
     // Search & Filters
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
         val rankingFilter = filters.find { it is RankingFilter } as? RankingFilter
