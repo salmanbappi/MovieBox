@@ -21,6 +21,10 @@ import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import android.util.Base64
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
+import okhttp3.HttpUrl
 import okhttp3.Headers
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
@@ -30,6 +34,7 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.security.MessageDigest
 import java.util.TimeZone
+import java.util.UUID
 
 class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
@@ -40,7 +45,12 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     override val id: Long = 3508466391484419848L
 
     private val apiBaseUrl = "https://h5-api.aoneroom.com"
+    private val mobileApiBaseUrl = "https://api3.aoneroom.com"
     private val playApiBaseUrl = "https://netfilm.world"
+
+    private val secretKeyDefault = "NzZpUmwwN3MweFNOOWpxbUVXQXQ3OUVCSlp1bElRSXNWNjRGWnIyTw=="
+    private val secretKeyAlt = "WHFuMm5uTzQxL0w5Mm8xaXVYaFNMSFRiWHZZNFo1Wlo2Mm04bVNMQQ=="
+
     private val blockedKeywords = listOf(
         "mma", "ufc", "wrestling", "boxing", "kickboxing", "muay thai", "rizin", "nfc", "highlights",
         "esports", "e-sports", "gaming", "gameplay", "pubg", "free fire", "dota", "league of legends", "valorant", "fifa", "fc 24", "roblox", "minecraft",
@@ -57,6 +67,119 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         .add("X-Request-Lang", "en")
         .add("X-Source", "MB_Website")
 
+    private fun getMobileHeaders(url: String, method: String = "GET", body: String? = null): Headers {
+        val timestamp = System.currentTimeMillis()
+        return Headers.Builder()
+            .add("User-Agent", "com.community.oneroom/50020088 (Linux; U; Android 13; en_US; Samsung; Build/TQ3A.230901.001; Cronet/145.0.7582.0)")
+            .add("Accept", "application/json")
+            .add("Content-Type", "application/json")
+            .add("X-Client-Token", generateXClientToken(timestamp))
+            .add("X-Tr-Signature", generateXTrSignature(method, "application/json", "application/json", url, body, timestamp = timestamp))
+            .add("X-Client-Info", getClientInfo())
+            .add("X-Client-Status", "0")
+            .build()
+    }
+
+    private fun getClientInfo(): String {
+        return JsonObject(mapOf(
+            "package_name" to kotlinx.serialization.json.JsonPrimitive("com.community.oneroom"),
+            "version_name" to kotlinx.serialization.json.JsonPrimitive("3.0.13.0325.03"),
+            "version_code" to kotlinx.serialization.json.JsonPrimitive(50020088),
+            "os" to kotlinx.serialization.json.JsonPrimitive("android"),
+            "os_version" to kotlinx.serialization.json.JsonPrimitive("13"),
+            "install_ch" to kotlinx.serialization.json.JsonPrimitive("ps"),
+            "device_id" to kotlinx.serialization.json.JsonPrimitive(deviceId),
+            "install_store" to kotlinx.serialization.json.JsonPrimitive("ps"),
+            "gaid" to kotlinx.serialization.json.JsonPrimitive(gaid),
+            "brand" to kotlinx.serialization.json.JsonPrimitive("Samsung"),
+            "model" to kotlinx.serialization.json.JsonPrimitive("SM-S918B"),
+            "system_language" to kotlinx.serialization.json.JsonPrimitive("en"),
+            "net" to kotlinx.serialization.json.JsonPrimitive("NETWORK_WIFI"),
+            "region" to kotlinx.serialization.json.JsonPrimitive("US"),
+            "timezone" to kotlinx.serialization.json.JsonPrimitive(TimeZone.getDefault().id),
+            "sp_code" to kotlinx.serialization.json.JsonPrimitive(""),
+            "X-Play-Mode" to kotlinx.serialization.json.JsonPrimitive("1"),
+            "X-Idle-Data" to kotlinx.serialization.json.JsonPrimitive("1"),
+            "X-Family-Mode" to kotlinx.serialization.json.JsonPrimitive("0"),
+            "X-Content-Mode" to kotlinx.serialization.json.JsonPrimitive("0"),
+        )).toString()
+    }
+
+    private fun generateXClientToken(timestamp: Long): String {
+        val tsStr = timestamp.toString()
+        val reversed = tsStr.reversed()
+        val hash = reversed.md5()
+        return "$tsStr,$hash"
+    }
+
+    private val deviceId by lazy { UUID.randomUUID().toString().replace("-", "") }
+    private val gaid by lazy { UUID.randomUUID().toString() }
+
+    private fun String.md5(): String = toByteArray().md5()
+
+    private fun ByteArray.md5(): String {
+        return MessageDigest.getInstance("MD5").digest(this)
+            .joinToString("") { "%02x".format(it) }
+    }
+
+    private fun buildCanonicalString(
+        method: String,
+        accept: String?,
+        contentType: String?,
+        url: String,
+        body: String?,
+        timestamp: Long
+    ): String {
+        val uri = HttpUrl.get(url)
+        val path = uri.encodedPath
+        
+        val query = if (uri.querySize > 0) {
+            (0 until uri.querySize).map { i ->
+                uri.queryParameterName(i) to uri.queryParameterValue(i)
+            }.sortedBy { it.first }.joinToString("&") { (key, value) ->
+                "$key=$value"
+            }
+        } else ""
+        
+        val canonicalUrl = if (query.isNotEmpty()) "$path?$query" else path
+
+        val bodyBytes = body?.toByteArray(Charsets.UTF_8)
+        val bodyHash = if (bodyBytes != null) {
+            val trimmed = if (bodyBytes.size > 102400) bodyBytes.copyOfRange(0, 102400) else bodyBytes
+            trimmed.md5()
+        } else ""
+
+        val bodyLength = bodyBytes?.size?.toString() ?: ""
+        return "${method.uppercase()}\n" +
+                "${accept ?: ""}\n" +
+                "${contentType ?: ""}\n" +
+                "$bodyLength\n" +
+                "$timestamp\n" +
+                "$bodyHash\n" +
+                canonicalUrl
+    }
+
+    private fun generateXTrSignature(
+        method: String,
+        accept: String?,
+        contentType: String?,
+        url: String,
+        body: String? = null,
+        useAltKey: Boolean = false,
+        timestamp: Long
+    ): String {
+        val canonical = buildCanonicalString(method, accept, contentType, url, body, timestamp)
+        val secretB64 = if (useAltKey) secretKeyAlt else secretKeyDefault
+        val secretBytes = Base64.decode(secretB64, Base64.DEFAULT)
+
+        val mac = Mac.getInstance("HmacMD5")
+        mac.init(SecretKeySpec(secretBytes, "HmacMD5"))
+        val signature = mac.doFinal(canonical.toByteArray(Charsets.UTF_8))
+        val signatureB64 = Base64.encodeToString(signature, Base64.NO_WRAP)
+
+        return "$timestamp|2|$signatureB64"
+    }
+
     private fun getToken(): String {
         val timestamp = (System.currentTimeMillis() / 1000).toString()
         val reversed = timestamp.reversed()
@@ -64,16 +187,10 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         return "$timestamp,$md5"
     }
 
-    private fun String.md5(): String {
-        return MessageDigest.getInstance("MD5")
-            .digest(this.toByteArray())
-            .joinToString("") { "%02x".format(it) }
-    }
-
     // Popular: High-Quality Trending API
     override fun popularAnimeRequest(page: Int): Request {
-        val url = "$apiBaseUrl/wefeed-h5api-bff/subject/trending?page=$page&perPage=18"
-        return GET(url, headersBuilder().add("X-Client-Token", getToken()).build())
+        val url = "$mobileApiBaseUrl/wefeed-mobile-bff/subject/trending?page=$page&perPage=18"
+        return GET(url, getMobileHeaders(url))
     }
 
     override fun popularAnimeParse(response: Response): AnimesPage {
@@ -90,24 +207,21 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val rankingFilter = filters.find { it is RankingFilter } as? RankingFilter
         if (query.isEmpty() && rankingFilter != null && rankingFilter.state > 0) {
             val rankingId = rankingFilter.toId()
-            val url = "$apiBaseUrl/wefeed-h5api-bff/ranking-list/content?id=$rankingId&page=$page&perPage=18"
-            return GET(url, headersBuilder().add("X-Client-Token", getToken()).build())
+            val url = "$mobileApiBaseUrl/wefeed-mobile-bff/ranking-list/content?id=$rankingId&page=$page&perPage=18"
+            return GET(url, getMobileHeaders(url))
         }
 
         if (query.isNotBlank()) {
-            // Website native keyword search endpoint.
-            val body = JsonObject(
+            val url = "$mobileApiBaseUrl/wefeed-mobile-bff/subject/search"
+            val bodyData = JsonObject(
                 mapOf(
                     "keyword" to kotlinx.serialization.json.JsonPrimitive(query),
                     "page" to kotlinx.serialization.json.JsonPrimitive(page),
                     "perPage" to kotlinx.serialization.json.JsonPrimitive(18),
                 ),
-            ).toString().toRequestBody("application/json".toMediaType())
-            return POST(
-                "$apiBaseUrl/wefeed-h5api-bff/subject/search",
-                headersBuilder().add("X-Client-Token", getToken()).build(),
-                body,
-            )
+            ).toString()
+            val body = bodyData.toRequestBody("application/json".toMediaType())
+            return POST(url, getMobileHeaders(url, "POST", bodyData), body)
         }
 
         val typeFilter = filters.find { it is TypeFilter } as? TypeFilter
@@ -152,8 +266,10 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             bodyMap["country"] = kotlinx.serialization.json.JsonPrimitive(countryFilter.toId())
         }
 
-        val body = JsonObject(bodyMap).toString().toRequestBody("application/json".toMediaType())
-        return POST("$apiBaseUrl/wefeed-h5api-bff/subject/filter", headersBuilder().add("X-Client-Token", getToken()).build(), body)
+        val url = "$mobileApiBaseUrl/wefeed-mobile-bff/subject/filter"
+        val bodyData = JsonObject(bodyMap).toString()
+        val body = bodyData.toRequestBody("application/json".toMediaType())
+        return POST(url, getMobileHeaders(url, "POST", bodyData), body)
     }
 
     override fun searchAnimeParse(response: Response): AnimesPage {
@@ -222,44 +338,20 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val subjectId = parts[0]
         val se = parts.find { it.startsWith("se=") }?.split("=")?.get(1) ?: "0"
         val ep = parts.find { it.startsWith("ep=") }?.split("=")?.get(1) ?: "0"
-        val detailPath = parts.find { it.startsWith("detailPath=") }?.split("=")?.get(1) ?: ""
         
-        val url = "$playApiBaseUrl/wefeed-h5api-bff/subject/play?subjectId=$subjectId&se=$se&ep=$ep&detailPath=$detailPath"
-        val referer = "$playApiBaseUrl/spa/videoPlayPage/movies/$detailPath?id=$subjectId&type=/movie/detail&detailSe=$se&detailEp=$ep&lang=en"
-        val playHeaders = Headers.Builder()
-            .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .add("Accept", "application/json")
-            .add("Origin", playApiBaseUrl)
-            .add("Referer", referer)
-            .add("X-Source", "mb_call_hola")
-            .add("X-Client-Info", """{"timezone":"${TimeZone.getDefault().id}"}""")
-            .build()
-        return GET(url, playHeaders)
+        val url = "$mobileApiBaseUrl/wefeed-mobile-bff/subject-api/play-info?subjectId=$subjectId&se=$se&ep=$ep"
+        return GET(url, getMobileHeaders(url))
     }
 
     override fun videoListParse(response: Response): List<Video> {
         val bodyString = response.body.string()
         val jsonRes = json.parseToJsonElement(bodyString).jsonObject
         val data = jsonRes["data"]?.jsonObject ?: return emptyList()
-        val requestReferer = response.request.header("Referer") ?: "$playApiBaseUrl/"
         
-        if (data["limited"]?.jsonPrimitive?.boolean == true) {
-            throw Exception("Limited Content: Open Website to Unlock")
-        }
-
-        val videos = parseVideoItems(data, requestReferer)
-        if (videos.isNotEmpty()) return videos
-
-        // Fallback: try legacy API host before giving up.
-        val requestUrl = response.request.url
-        val legacyUrl = "$apiBaseUrl/wefeed-h5api-bff/subject/play?" + requestUrl.query.orEmpty()
-        val legacyRequest = GET(legacyUrl, headersBuilder()
-            .add("X-Client-Token", getToken())
-            .add("X-Client-Info", """{"timezone":"${TimeZone.getDefault().id}"}""")
-            .build())
-        val legacyBody = client.newCall(legacyRequest).execute().use { it.body.string() }
-        val legacyData = json.parseToJsonElement(legacyBody).jsonObject["data"]?.jsonObject ?: return emptyList()
-        return parseVideoItems(legacyData, requestReferer)
+        // Use mobile app referer for stream consistency
+        val referer = "https://h5.aoneroom.com/"
+        
+        return parseVideoItems(data, referer)
     }
 
     override fun List<Video>.sort(): List<Video> {
@@ -416,46 +508,34 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     private fun fetchSubtitleTracks(data: JsonObject, referer: String): List<Track> {
-        val hls = data["hls"]?.jsonArray.orEmpty()
         val streams = data["streams"]?.jsonArray.orEmpty()
-        val (format, id) = when {
-            hls.isNotEmpty() -> "HLS" to (hls.first().jsonObject["id"]?.jsonPrimitive?.content ?: "")
-            streams.isNotEmpty() -> "MP4" to (streams.first().jsonObject["id"]?.jsonPrimitive?.content ?: "")
-            else -> "" to ""
-        }
-        if (format.isBlank() || id.isBlank()) return emptyList()
+        val streamId = streams.firstOrNull()?.jsonObject?.get("id")?.jsonPrimitive?.content ?: ""
+        
+        val subjectId = runCatching {
+            java.net.URL(referer).query
+                ?.split("&")
+                ?.mapNotNull {
+                    val p = it.split("=")
+                    if (p.size == 2 && p[0] == "id") p[1] else null
+                }?.firstOrNull()
+        }.getOrNull() ?: ""
 
-        val refererUrl = runCatching { java.net.URL(referer) }.getOrNull() ?: return emptyList()
-        val detailPath = refererUrl.path.split("/").lastOrNull { it.isNotBlank() } ?: return emptyList()
-        val subjectId = refererUrl.query
-            ?.split("&")
-            ?.mapNotNull {
-                val p = it.split("=")
-                if (p.size == 2 && p[0] == "id") p[1] else null
-            }?.firstOrNull().orEmpty()
-        if (subjectId.isBlank()) return emptyList()
+        if (streamId.isBlank() || subjectId.isBlank()) return emptyList()
 
-        val captionUrl = "$playApiBaseUrl/wefeed-h5api-bff/subject/caption?format=$format&id=$id&subjectId=$subjectId&detailPath=$detailPath"
-        val captionHeaders = Headers.Builder()
-            .add("Accept", "application/json")
-            .add("Origin", playApiBaseUrl)
-            .add("Referer", referer)
-            .add("X-Client-Info", """{"timezone":"${TimeZone.getDefault().id}"}""")
-            .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .build()
-
+        val url = "$mobileApiBaseUrl/wefeed-mobile-bff/subject-api/get-stream-captions?subjectId=$subjectId&streamId=$streamId"
+        
         return runCatching {
-            val req = GET(captionUrl, captionHeaders)
+            val req = GET(url, getMobileHeaders(url))
             val body = client.newCall(req).execute().use { it.body.string() }
-            val captions = json.parseToJsonElement(body).jsonObject["data"]?.jsonObject?.get("captions")?.jsonArray.orEmpty()
+            val captions = json.parseToJsonElement(body).jsonObject["data"]?.jsonObject?.get("extCaptions")?.jsonArray.orEmpty()
             captions.mapNotNull { cap ->
                 val obj = cap.jsonObject
-                val url = obj["url"]?.jsonPrimitive?.content.orEmpty().normalizeVideoUrl()
-                if (url.isBlank()) return@mapNotNull null
+                val capUrl = obj["url"]?.jsonPrimitive?.content.orEmpty().normalizeVideoUrl()
+                if (capUrl.isBlank()) return@mapNotNull null
                 val lang = obj["lanName"]?.jsonPrimitive?.content
                     ?: obj["lan"]?.jsonPrimitive?.content
                     ?: "Unknown"
-                Track(url, lang)
+                Track(capUrl, lang)
             }
         }.getOrDefault(emptyList())
     }
