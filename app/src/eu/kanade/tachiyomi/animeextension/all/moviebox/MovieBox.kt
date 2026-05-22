@@ -130,7 +130,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         body: String?,
         timestamp: Long
     ): String {
-        val uri = HttpUrl.get(url)
+        val uri = HttpUrl.parse(url) ?: throw Exception("Invalid URL: $url")
         val path = uri.encodedPath
         
         val query = if (uri.querySize > 0) {
