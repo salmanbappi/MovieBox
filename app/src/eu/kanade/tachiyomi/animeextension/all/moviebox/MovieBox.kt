@@ -282,7 +282,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         
         val body = response.body.string()
         val jsonRes = if (body.contains("<html", ignoreCase = true) || !body.startsWith("{")) {
-            val id = response.request.url.queryParameter("subjectId") ?: response.request.url.substringAfterLast("/")
+            val id = response.request.url.queryParameter("subjectId") ?: response.request.url.toString().substringAfterLast("/")
             val result = safeGetJsonWithHeaders("/wefeed-mobile-bff/subject-api/get?subjectId=$id", isDetails = true)
             token = result?.second?.get("x-user")?.let { runCatching { json.parseToJsonElement(it).obj?.get("token")?.str }.getOrNull() }
             result?.first
@@ -310,7 +310,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         
         val body = response.body.string()
         val jsonRes = if (body.contains("<html", ignoreCase = true) || !body.startsWith("{")) {
-            val id = response.request.url.queryParameter("subjectId") ?: response.request.url.substringAfterLast("/")
+            val id = response.request.url.queryParameter("subjectId") ?: response.request.url.toString().substringAfterLast("/")
             safeGetJsonWithHeaders("/wefeed-mobile-bff/subject-api/get?subjectId=$id", token = token, isDetails = true)?.first
         } else json.parseToJsonElement(body)
         
