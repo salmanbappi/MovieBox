@@ -36,7 +36,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     override val name = "MovieBox"
     override val baseUrl = "https://moviebox.ph"
     override val lang = "all"
-    override val supportsLatest = true
+    override val supportsLatest = false
     override val id: Long = 3508466391484419848L
 
     private val apiBaseUrl = "https://h5-api.aoneroom.com"
@@ -77,16 +77,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     override fun popularAnimeParse(response: Response): AnimesPage {
-        return parseSubjectListPage(response)
-    }
-
-    // Latest: Filtered Latest (Max perPage 50 to bypass noise without 400 error)
-    override fun latestUpdatesRequest(page: Int): Request {
-        val body = """{"page": $page, "perPage": 50, "sort": "Latest", "classify": "All"}""".toRequestBody("application/json".toMediaType())
-        return POST("$apiBaseUrl/wefeed-h5api-bff/subject/filter", headersBuilder().add("X-Client-Token", getToken()).build(), body)
-    }
-
-    override fun latestUpdatesParse(response: Response): AnimesPage {
         return parseSubjectListPage(response)
     }
 
