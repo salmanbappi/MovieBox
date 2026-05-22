@@ -117,6 +117,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
         val typeFilter = filters.find { it is TypeFilter } as? TypeFilter
         val languageFilter = filters.find { it is LanguageFilter } as? LanguageFilter
+        val minRateFilter = filters.find { it is MinRateFilter } as? MinRateFilter
         val sortFilter = filters.find { it is SortFilter } as? SortFilter
         val genreFilter = filters.find { it is GenreFilter } as? GenreFilter
         val yearFilter = filters.find { it is YearFilter } as? YearFilter
@@ -140,12 +141,13 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         if (languageFilter != null && languageFilter.state > 0) {
             bodyMap["classify"] = kotlinx.serialization.json.JsonPrimitive(languageFilter.toId())
         }
-        if (sortFilter != null) {
+        if (minRateFilter != null && minRateFilter.state > 0) {
+            bodyMap["rate"] = kotlinx.serialization.json.JsonPrimitive(minRateFilter.toId())
+        }
+        if (sortFilter != null && sortFilter.state > 0) {
             bodyMap["sort"] = kotlinx.serialization.json.JsonPrimitive(sortFilter.toId())
         }
         if (genreFilter != null && genreFilter.state > 0) {
-            // Genre filter might be partially applied by Animated Series type, 
-            // but user-selected genre should take precedence.
             bodyMap["genre"] = kotlinx.serialization.json.JsonPrimitive(genreFilter.toId())
         }
         if (yearFilter != null && yearFilter.state > 0) {
@@ -287,11 +289,13 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         RankingFilter()
     )
 
-    private class SortFilter : AnimeFilter.Select<String>("Sort", arrayOf("Popular", "Latest", "IMDb Rating")) {
+    private class SortFilter : AnimeFilter.Select<String>("Sort", arrayOf("Default", "ForYou", "Hottest", "Rating", "Latest")) {
         fun toId() = when (state) {
-            1 -> "Latest"
-            2 -> "Rating"
-            else -> "Hottest"
+            1 -> "ForYou"
+            2 -> "Hottest"
+            3 -> "Rating"
+            4 -> "Latest"
+            else -> ""
         }
     }
 
@@ -308,23 +312,29 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     private class LanguageFilter : AnimeFilter.Select<String>("Language/Dub", arrayOf(
-        "All", "English Dub", "Hindi Dub", "Bengali Dub", "French Dub", "Urdu Dub", "Tamil Dub", "Telugu Dub", "Punjabi Dub", "Malayalam Dub", "Kannada Dub", "Arabic Dub", "Tagalog Dub", "Indonesian Dub", "Russian Dub", "Spanish Dub"
+        "All", "English Dub", "Hindi Dub", "Bangla dub", "French Dub", "Urdu Dub", "Tamil Dub", "Telugu Dub", "Punjabi Dub", "Malayalam Dub", "Kannada Dub", "Arabic Dub", "Arabic Sub", "Tagalog Dub", "Indonesian Dub", "Russian Dub", "Kurdish Sub", "Spanish Dub", "Spanish Sub", "SpanishLatam Dub"
     )) {
         fun toId() = if (state == 0) "All" else values[state]
+    }
+
+    private class MinRateFilter : AnimeFilter.Select<String>("Minimum Rating", arrayOf(
+        "All", "9+", "8+", "7+", "6+", "5+"
+    )) {
+        fun toId() = if (state == 0) "" else values[state].removeSuffix("+")
     }
 
     private class GenreFilter : AnimeFilter.Select<String>("Genre", arrayOf(
-        "All", "Action", "Adventure", "Animation", "Biography", "Comedy", "Crime", "Documentary", "Drama", "Family", "Fantasy", "Film-Noir", "Game-Show", "History", "Horror", "Music", "Musical", "Mystery", "News", "Reality-TV", "Romance", "Sci-Fi", "Short", "Sport", "Talk-Show", "Thriller", "War", "Western"
+        "All", "Action", "Adventure", "Animation", "Biography", "Comedy", "Crime", "Documentary", "Drama", "Family", "Fantasy", "Film-Noir", "Game-Show", "History", "Horror", "Music", "Musical", "Mystery", "News", "Reality-TV", "Romance", "Sci-Fi", "Short", "Sport", "Talk-Show", "Thriller", "War", "Western", "Other"
     )) {
         fun toId() = if (state == 0) "All" else values[state]
     }
 
-    private class YearFilter : AnimeFilter.Select<String>("Year", arrayOf("All") + (2026 downTo 2020).map { it.toString() }.toTypedArray() + arrayOf("2010s", "2000s", "1990s", "1980s")) {
+    private class YearFilter : AnimeFilter.Select<String>("Year", arrayOf("All") + (2026 downTo 2020).map { it.toString() }.toTypedArray() + arrayOf("2010s", "2000s", "1990s", "1980s", "Other")) {
         fun toId() = if (state == 0) "All" else values[state]
     }
 
     private class CountryFilter : AnimeFilter.Select<String>("Country", arrayOf(
-        "All", "United States", "India", "China", "United Kingdom", "France", "Germany", "Indonesia", "Iraq", "Italy", "Mexico", "Nigeria", "Pakistan", "Philippines", "Russia", "Saudi Arabia", "South Africa", "Spain", "Syria", "Thailand", "Malaysia"
+        "All", "United States", "United Kingdom", "Korea", "Japan", "Bangladesh", "China", "Egypt", "France", "Germany", "India", "Indonesia", "Iraq", "Italy", "Ivory Coast", "Kenya", "Lebanon", "Mexico", "Morocco", "Nigeria", "Pakistan", "Philippines", "Russia", "Saudi Arabia", "South Africa", "Spain", "Syria", "Thailand", "Malaysia", "Turkey", "Other"
     )) {
         fun toId() = if (state == 0) "All" else values[state]
     }
