@@ -69,34 +69,27 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         .add("Origin", "https://moviebox.ph")
         .add("Accept", "application/json")
 
-    private fun getApiHeaders(url: String, method: String = "GET", body: String? = null, token: String? = null, isDetails: Boolean = false, useMobile: Boolean = true): Headers {
+    private fun getApiHeaders(url: String, method: String = "GET", body: String? = null, token: String? = null, isDetails: Boolean = false, isPlayback: Boolean = false): Headers {
         val timestamp = System.currentTimeMillis()
         val contentType = if (method == "POST") "application/json; charset=utf-8" else "application/json"
         
-        val builder = Headers.Builder()
+        return Headers.Builder()
+            .add("user-agent", "com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; sdk_gphone64_x86_64; Build/BP22.250325.006; Cronet/133.0.6876.3)")
             .add("accept", "application/json")
             .add("content-type", contentType)
             .add("connection", "keep-alive")
-            .add("X-Request-Lang", "en")
-            
-        if (useMobile) {
-            builder.add("user-agent", "com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; sdk_gphone64_x86_64; Build/BP22.250325.006; Cronet/133.0.6876.3)")
-            builder.add("x-client-token", generateXClientToken(timestamp))
-            builder.add("x-tr-signature", generateXTrSignature(method, "application/json", contentType, url, body, timestamp = timestamp))
-            builder.add("x-client-info", getClientInfo())
-            builder.add("x-client-status", "0")
-            builder.add("x-source", "mb_call_hola")
-            if (isDetails) builder.add("x-play-mode", "2") else builder.add("x-play-mode", "1")
-        } else {
-            builder.add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            builder.add("X-Source", "MB_Website")
-        }
-
-        if (!token.isNullOrBlank()) {
-            builder.add("Authorization", "Bearer $token")
-        }
-        
-        return builder.build()
+            .add("x-client-token", generateXClientToken(timestamp))
+            .add("x-tr-signature", generateXTrSignature(method, "application/json", contentType, url, body, timestamp = timestamp))
+            .add("x-client-info", getClientInfo())
+            .add("x-client-status", "0")
+            .apply {
+                if (isDetails) add("x-play-mode", "2")
+                if (isPlayback) add("x-play-mode", "1")
+                if (!token.isNullOrBlank()) {
+                    add("Authorization", "Bearer $token")
+                }
+            }
+            .build()
     }
 
     private fun getClientInfo(): String {
@@ -167,7 +160,13 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         } else ""
 
         val bodyLength = bodyBytes?.size?.toString() ?: ""
-        return "${method.uppercase()}\n${accept ?: ""}\n${contentType ?: ""}\n$bodyLength\n$timestamp\n$bodyHash\n$canonicalUrl"
+        return "${method.uppercase()}\n" +
+                "${accept ?: ""}\n" +
+                "${contentType ?: ""}\n" +
+                "$bodyLength\n" +
+                "$timestamp\n" +
+                "$bodyHash\n" +
+                canonicalUrl
     }
 
     private fun md5ByteArray(input: ByteArray): String {
@@ -184,32 +183,31 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         timestamp: Long
     ): String {
         val canonical = buildCanonicalString(method, accept, contentType, url, body, timestamp)
+        
         val rawSecret = secretKeyDefault.removePrefix("base64Decode:")
         val secretStr = String(Base64.decode(rawSecret, Base64.DEFAULT))
         val secretBytes = Base64.decode(secretStr, Base64.DEFAULT)
+
         val mac = Mac.getInstance("HmacMD5")
         mac.init(SecretKeySpec(secretBytes, "HmacMD5"))
         val signature = mac.doFinal(canonical.toByteArray(Charsets.UTF_8))
-        return "$timestamp|2|${Base64.encodeToString(signature, Base64.NO_WRAP)}"
+        val signatureB64 = Base64.encodeToString(signature, Base64.NO_WRAP)
+
+        return "$timestamp|2|$signatureB64"
     }
 
-    private fun getPreferredHost(): String = preferences.getString(PREF_HOST_KEY, apiHosts[0]) ?: apiHosts[0]
+    private fun getPreferredHost(): String {
+        return preferences.getString(PREF_HOST_KEY, apiHosts[0]) ?: apiHosts[0]
+    }
 
-    private fun safeGetJsonVerified(urlPath: String, isPost: Boolean = false, bodyData: String? = null, token: String? = null, isDetails: Boolean = false): Pair<JsonElement, Headers>? {
-        // Try Mobile API (api3) first, then Mirrors with Web headers
-        val hostsToTry = listOf(
-            Pair(apiHosts[0], true),  // api3 with Mobile headers
-            Pair(apiHosts[1], false), // netfilm with Web headers
-            Pair(apiHosts[2], false)  // h5-api with Web headers
-        )
-        
-        for ((host, useMobile) in hostsToTry) {
+    private fun safeGetJsonWithHeaders(urlPath: String, isPost: Boolean = false, bodyData: String? = null, token: String? = null, isDetails: Boolean = false): Pair<JsonElement, Headers>? {
+        for (host in apiHosts) {
             val url = host + urlPath
             val request = if (isPost) {
                 val body = bodyData.orEmpty().toRequestBody("application/json; charset=utf-8".toMediaType())
-                POST(url, getApiHeaders(url, "POST", bodyData, token = token, isDetails = isDetails, useMobile = useMobile), body)
+                POST(url, getApiHeaders(url, "POST", bodyData, token = token, isDetails = isDetails), body)
             } else {
-                GET(url, getApiHeaders(url, token = token, isDetails = isDetails, useMobile = useMobile))
+                GET(url, getApiHeaders(url, token = token, isDetails = isDetails))
             }
             try {
                 val response = client.newCall(request).execute()
@@ -231,7 +229,9 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     override fun popularAnimeParse(response: Response): AnimesPage {
         val body = response.body.string()
-        val jsonRes = if (!body.startsWith("{")) safeGetJsonVerified(response.request.url.toString().substringAfter(".com").substringAfter(".world"))?.first else json.parseToJsonElement(body)
+        val jsonRes = if (!body.startsWith("{")) {
+            safeGetJsonWithHeaders("/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=4516404531735022304&page=1&perPage=18")?.first
+        } else json.parseToJsonElement(body)
         val data = jsonRes?.obj?.get("data")?.obj ?: return AnimesPage(emptyList(), false)
         return parseSubjectListPage(data)
     }
@@ -260,10 +260,11 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     override fun animeDetailsParse(response: Response): SAnime {
         val xUser = response.header("x-user")
         var token = xUser?.let { runCatching { json.parseToJsonElement(it).obj?.get("token")?.str }.getOrNull() }
+        
         val body = response.body.string()
         val jsonRes = if (!body.startsWith("{")) {
             val id = response.request.url.queryParameter("subjectId") ?: response.request.url.toString().substringAfterLast("/")
-            val result = safeGetJsonVerified("/wefeed-mobile-bff/subject-api/get?subjectId=$id", isDetails = true)
+            val result = safeGetJsonWithHeaders("/wefeed-mobile-bff/subject-api/get?subjectId=$id", isDetails = true)
             token = result?.second?.get("x-user")?.let { runCatching { json.parseToJsonElement(it).obj?.get("token")?.str }.getOrNull() }
             result?.first
         } else json.parseToJsonElement(body)
@@ -298,7 +299,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val body = response.body.string()
         val jsonRes = if (!body.startsWith("{")) {
             val id = response.request.url.queryParameter("subjectId") ?: response.request.url.toString().substringAfterLast("/")
-            safeGetJsonVerified("/wefeed-mobile-bff/subject-api/get?subjectId=$id", token = token, isDetails = true)?.first
+            safeGetJsonWithHeaders("/wefeed-mobile-bff/subject-api/get?subjectId=$id", token = token, isDetails = true)?.first
         } else json.parseToJsonElement(body)
         
         val data = jsonRes?.obj?.get("data")?.obj ?: return emptyList()
@@ -314,7 +315,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
         for (sid in allIds) {
             val seasonsUrl = "/wefeed-mobile-bff/subject-api/season-info?subjectId=$sid"
-            val seasonsRes = safeGetJsonVerified(seasonsUrl, token = token, isDetails = true)?.first
+            val seasonsRes = safeGetJsonWithHeaders(seasonsUrl, token = token, isDetails = true)?.first
             val seasons = seasonsRes?.obj?.get("data")?.obj?.get("seasons")?.arr
             
             seasons?.forEach { seasonEl ->
@@ -332,7 +333,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                 episodes.add(SEpisode.create().apply {
                     name = "Season $seNum - Episode $epNum"
                     episode_number = epNum.toFloat()
-                    url = "$seNum|$epNum|$idsString" + if (!token.isNullOrBlank()) "|$token" else ""
+                    url = "$seNum|$epNum|$idsString|$detailPath" + if (!token.isNullOrBlank()) "|$token" else ""
                     date_upload = System.currentTimeMillis()
                 })
             }
@@ -342,24 +343,27 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             SEpisode.create().apply {
                 name = "Play Movie"
                 episode_number = 1f
-                url = "0|0|$mainSubjectId" + if (!token.isNullOrBlank()) "|$token" else ""
+                url = "0|0|$mainSubjectId|$detailPath" + if (!token.isNullOrBlank()) "|$token" else ""
                 date_upload = System.currentTimeMillis()
             }
         )
     }
 
-    override fun videoListRequest(episode: SEpisode): Request = GET(baseUrl, headersBuilder().build())
+    override fun videoListRequest(episode: SEpisode): Request {
+        return GET(baseUrl, headersBuilder().build())
+    }
 
     override fun videoListParse(response: Response): List<Video> {
         val episodeUrl = response.request.header("X-Tachiyomi-Episode-Url") ?: response.request.url.toString()
         val parts = episodeUrl.split("|")
-        if (parts.size < 3) return emptyList()
+        if (parts.size < 4) return emptyList()
         
-        val se = parts[0]; val ep = parts[1]; val subjectIds = parts[2].split(","); val token = if (parts.size > 3) parts[3] else null
+        val se = parts[0]; val ep = parts[1]; val subjectIds = parts[2].split(","); val token = if (parts.size > 4) parts[4] else null
+
         val videos = mutableListOf<Video>()
         for (sid in subjectIds) {
             val playUrl = "/wefeed-mobile-bff/subject-api/play-info?subjectId=$sid&se=$se&ep=$ep"
-            val jsonRes = safeGetJsonVerified(playUrl, token = token, isPlayback = true)?.first ?: continue
+            val jsonRes = safeGetJsonWithHeaders(playUrl, token = token, isPlayback = true)?.first ?: continue
             jsonRes.obj?.get("data")?.obj?.get("streams")?.arr?.forEach { stream ->
                 val obj = stream.obj ?: return@forEach
                 val url = obj["url"]?.str ?: return@forEach
@@ -374,7 +378,9 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     private fun parseSubjectListPage(data: JsonObject): AnimesPage {
         val items = data["subjectList"]?.arr ?: data["items"]?.arr ?: data["subjects"]?.arr ?: data["results"]?.arr?.mapNotNull { it.obj?.get("subjects")?.arr }?.flatten() ?: return AnimesPage(emptyList(), false)
         val animes = (items as List<JsonElement>).mapNotNull { item ->
-            val subject = item.obj?.let { if (it.containsKey("subject")) it["subject"]?.obj else it } ?: return@mapNotNull null
+            val obj = item.obj ?: return@mapNotNull null
+            val subject = if (obj.containsKey("subject")) obj["subject"]?.obj else obj
+            if (subject == null) return@mapNotNull null
             val id = subject["subjectId"]?.str ?: return@mapNotNull null
             SAnime.create().apply { title = subject["title"]?.str ?: ""; url = "/movies/$id"; thumbnail_url = subject["cover"]?.obj?.get("url")?.str }
         }
