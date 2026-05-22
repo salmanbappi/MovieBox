@@ -252,8 +252,11 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     override fun episodeListParse(response: Response): List<SEpisode> {
         val body = response.body.string()
-        val jsonRes = if (body.contains("<html", ignoreCase = true)) {
-            val id = response.request.url.queryParameter("subjectId") ?: response.request.url.queryParameter("detailPath").orEmpty()
+        
+        // Comprehensive host & source failover for episode listing
+        val jsonRes = if (body.contains("<html", ignoreCase = true) || !body.startsWith("{")) {
+            val id = response.request.url.queryParameter("subjectId") 
+                ?: response.request.url.queryParameter("detailPath").orEmpty()
             val param = if (id.all { it.isDigit() }) "subjectId" else "detailPath"
             safeGetJson("/wefeed-h5api-bff/detail?$param=$id")
         } else json.parseToJsonElement(body)
@@ -263,15 +266,22 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val subjectId = subject["subjectId"]?.jsonPrimitive?.content ?: return emptyList()
         val detailPath = subject["detailPath"]?.jsonPrimitive?.content ?: subjectId
         val subjectType = subject["subjectType"]?.jsonPrimitive?.content?.toIntOrNull() ?: 1
-        val seasons = data["resource"]?.jsonObject?.get("seasons")?.jsonArray
+        
+        // Seasons can be in 'resource' or root 'data' depending on API version
+        val resource = data["resource"]?.jsonObject ?: data
+        val seasons = resource["seasons"]?.jsonArray
 
-        if (subjectType != 1 && !seasons.isNullOrEmpty()) {
+        if (!seasons.isNullOrEmpty()) {
             val episodes = mutableListOf<SEpisode>()
             seasons.forEach { seasonEl ->
                 val season = seasonEl.jsonObject
                 val seNum = season["se"]?.jsonPrimitive?.content?.toIntOrNull() ?: return@forEach
                 val allEpRaw = season["allEp"]?.jsonPrimitive?.content.orEmpty()
-                val totalEp = if (allEpRaw.isNotBlank()) allEpRaw.split(",").size else season["maxEp"]?.jsonPrimitive?.content?.toIntOrNull() ?: 1
+                val totalEp = if (allEpRaw.isNotBlank()) {
+                    allEpRaw.split(",").filter { it.isNotBlank() }.size
+                } else {
+                    season["maxEp"]?.jsonPrimitive?.content?.toIntOrNull() ?: 1
+                }
 
                 for (i in 1..totalEp) {
                     episodes.add(SEpisode.create().apply {
@@ -285,6 +295,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             if (episodes.isNotEmpty()) return episodes.reversed()
         }
 
+        // Fallback for Movies or single-episode Series
         return listOf(
             SEpisode.create().apply {
                 name = "Full Movie"
