@@ -16,6 +16,7 @@ import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
@@ -111,9 +112,9 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                 
                 try {
                     val response = client.newCall(request).execute()
-                    val body = response.body.string()
+                    val body = response.body.string().trim()
                     
-                    if (body.contains("<html", ignoreCase = true) || body.contains("<!DOCTYPE", ignoreCase = true)) {
+                    if (body.isEmpty() || body.contains("<html", ignoreCase = true) || body.contains("<!DOCTYPE", ignoreCase = true) || !body.startsWith("{")) {
                         continue
                     }
                     
@@ -125,7 +126,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             }
         }
         
-        throw lastError ?: Exception("The server returned an HTML page or was unreachable on all verified mirrors. This usually happens if your network/ISP is blocking the site. Try changing the 'API Host' in extension settings or use a VPN.")
+        throw lastError ?: Exception("Connectivity Error. Please change 'API Host' in extension settings or use a VPN.")
     }
 
     // Popular: High-Quality Trending API
@@ -135,8 +136,8 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     override fun popularAnimeParse(response: Response): AnimesPage {
-        val body = response.body.string()
-        val jsonRes = if (body.contains("<html", ignoreCase = true)) {
+        val body = response.body.string().trim()
+        val jsonRes = if (body.contains("<html", ignoreCase = true) || !body.startsWith("{")) {
             val url = response.request.url.toString().substringAfter(".com").substringAfter(".world")
             safeGetJson(url)
         } else json.parseToJsonElement(body)
@@ -211,11 +212,10 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     override fun searchAnimeParse(response: Response): AnimesPage {
-        val body = response.body.string()
-        val jsonRes = if (body.contains("<html", ignoreCase = true)) {
-            val url = response.request.url.toString().substringAfter(".com").substringAfter(".world")
-            // Re-executing POST is complex in failover, throw clear error
-            throw Exception("Received HTML. Please change 'API Host' in extension settings.")
+        val body = response.body.string().trim()
+        val jsonRes = if (body.contains("<html", ignoreCase = true) || !body.startsWith("{")) {
+            // Simplified error for search; direct failover is complex for POST
+            throw Exception("Search Error. Try changing Host in settings.")
         } else json.parseToJsonElement(body)
         
         val data = jsonRes.jsonObject["data"]?.jsonObject ?: return AnimesPage(emptyList(), false)
@@ -231,15 +231,15 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     override fun animeDetailsParse(response: Response): SAnime {
-        val body = response.body.string()
-        val jsonRes = if (body.contains("<html", ignoreCase = true)) {
+        val body = response.body.string().trim()
+        val jsonRes = if (body.contains("<html", ignoreCase = true) || !body.startsWith("{")) {
             val id = response.request.url.queryParameter("subjectId") ?: response.request.url.queryParameter("detailPath").orEmpty()
             val param = if (id.all { it.isDigit() }) "subjectId" else "detailPath"
             safeGetJson("/wefeed-h5api-bff/detail?$param=$id")
         } else json.parseToJsonElement(body)
         
         val data = jsonRes.jsonObject["data"]?.jsonObject ?: throw Exception("Details not found")
-        val subject = data["subject"]?.jsonObject ?: throw Exception("Subject not found")
+        val subject = data["subject"]?.jsonObject ?: data 
 
         return SAnime.create().apply {
             title = subject["title"]?.jsonPrimitive?.content ?: ""
@@ -251,9 +251,8 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     override fun episodeListParse(response: Response): List<SEpisode> {
-        val body = response.body.string()
+        val body = response.body.string().trim()
         
-        // Comprehensive host & source failover for episode listing
         val jsonRes = if (body.contains("<html", ignoreCase = true) || !body.startsWith("{")) {
             val id = response.request.url.queryParameter("subjectId") 
                 ?: response.request.url.queryParameter("detailPath").orEmpty()
@@ -261,15 +260,20 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             safeGetJson("/wefeed-h5api-bff/detail?$param=$id")
         } else json.parseToJsonElement(body)
         
-        val data = jsonRes.jsonObject["data"]?.jsonObject ?: return emptyList()
-        val subject = data["subject"]?.jsonObject ?: return emptyList()
-        val subjectId = subject["subjectId"]?.jsonPrimitive?.content ?: return emptyList()
-        val detailPath = subject["detailPath"]?.jsonPrimitive?.content ?: subjectId
-        val subjectType = subject["subjectType"]?.jsonPrimitive?.content?.toIntOrNull() ?: 1
+        val jsonRoot = jsonRes.jsonObject
+        val data = jsonRoot["data"]?.jsonObject ?: jsonRoot
         
-        // Seasons can be in 'resource' or root 'data' depending on API version
+        val subject = data["subject"]?.jsonObject ?: data
+        val subjectId = subject["subjectId"]?.jsonPrimitive?.content 
+            ?: data["subjectId"]?.jsonPrimitive?.content
+            ?: return emptyList()
+            
+        val detailPath = subject["detailPath"]?.jsonPrimitive?.content 
+            ?: data["detailPath"]?.jsonPrimitive?.content 
+            ?: subjectId
+            
         val resource = data["resource"]?.jsonObject ?: data
-        val seasons = resource["seasons"]?.jsonArray
+        val seasons = resource["seasons"]?.jsonArray ?: data["seasons"]?.jsonArray
 
         if (!seasons.isNullOrEmpty()) {
             val episodes = mutableListOf<SEpisode>()
@@ -283,22 +287,24 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                     season["maxEp"]?.jsonPrimitive?.content?.toIntOrNull() ?: 1
                 }
 
-                for (i in 1..totalEp) {
-                    episodes.add(SEpisode.create().apply {
-                        name = "Season $seNum - Episode $i"
-                        episode_number = i.toFloat()
-                        url = "$subjectId&se=$seNum&ep=$i&detailPath=$detailPath"
-                        date_upload = System.currentTimeMillis()
-                    })
+                if (totalEp > 0) {
+                    for (i in 1..totalEp) {
+                        episodes.add(SEpisode.create().apply {
+                            name = "Season $seNum - Episode $i"
+                            episode_number = i.toFloat()
+                            url = "$subjectId&se=$seNum&ep=$i&detailPath=$detailPath"
+                            date_upload = System.currentTimeMillis()
+                        })
+                    }
                 }
             }
             if (episodes.isNotEmpty()) return episodes.reversed()
         }
 
-        // Fallback for Movies or single-episode Series
         return listOf(
             SEpisode.create().apply {
-                name = "Full Movie"
+                name = "Play Movie"
+                episode_number = 1f
                 url = "$subjectId&se=0&ep=0&detailPath=$detailPath"
                 date_upload = System.currentTimeMillis()
             },
@@ -317,8 +323,8 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     override fun videoListParse(response: Response): List<Video> {
-        val body = response.body.string()
-        val jsonRes = if (body.contains("<html", ignoreCase = true)) {
+        val body = response.body.string().trim()
+        val jsonRes = if (body.contains("<html", ignoreCase = true) || !body.startsWith("{")) {
             val url = response.request.url.toString().substringAfter(".com").substringAfter(".world")
             safeGetJson(url)
         } else json.parseToJsonElement(body)
