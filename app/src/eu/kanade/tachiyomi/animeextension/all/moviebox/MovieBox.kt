@@ -70,9 +70,9 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             .joinToString("") { "%02x".format(it) }
     }
 
-    // Popular: High-Quality Trending API
+    // Popular: High-Quality Trending Now Ranking List
     override fun popularAnimeRequest(page: Int): Request {
-        val url = "$apiBaseUrl/wefeed-h5api-bff/subject/trending?page=$page&perPage=18"
+        val url = "$apiBaseUrl/wefeed-h5api-bff/ranking-list/content?id=8610422883619422240&page=$page&perPage=18"
         return GET(url, headersBuilder().add("X-Client-Token", getToken()).build())
     }
 
@@ -80,9 +80,9 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         return parseSubjectListPage(response)
     }
 
-    // Latest: Filtered Latest
+    // Latest: Filtered Latest (High perPage to bypass noise)
     override fun latestUpdatesRequest(page: Int): Request {
-        val body = """{"page": $page, "perPage": 18, "sort": "Latest"}""".toRequestBody("application/json".toMediaType())
+        val body = """{"page": $page, "perPage": 60, "sort": "Latest"}""".toRequestBody("application/json".toMediaType())
         return POST("$apiBaseUrl/wefeed-h5api-bff/subject/filter", headersBuilder().add("X-Client-Token", getToken()).build(), body)
     }
 
