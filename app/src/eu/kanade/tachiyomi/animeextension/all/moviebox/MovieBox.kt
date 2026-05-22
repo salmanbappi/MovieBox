@@ -371,30 +371,41 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         )
     }
 
-    override fun videoListRequest(episode: SEpisode): Request = GET(baseUrl, headersBuilder().build())
+    override fun videoListRequest(episode: SEpisode): Request {
+        return GET(baseUrl, headersBuilder().add("X-Tachiyomi-Episode-Url", episode.url).build())
+    }
 
     override fun videoListParse(response: Response): List<Video> {
-        val episodeUrl = response.request.header("X-Tachiyomi-Episode-Url") ?: response.request.url.toString()
+        val episodeUrl = response.request.header("X-Tachiyomi-Episode-Url") ?: return emptyList()
         val parts = episodeUrl.split("|")
         if (parts.size < 4) return emptyList()
         
-        val se = parts[0]; val ep = parts[1]; val subjectIds = parts[2].split(","); val token = if (parts.size > 4) parts[4] else null
+        val se = parts[0]
+        val ep = parts[1]
+        val subjectIds = parts[2].split(",")
+        val token = if (parts.size > 4) parts[4] else null
 
         val videos = mutableListOf<Video>()
         for (sid in subjectIds) {
             val playUrl = "/wefeed-mobile-bff/subject-api/play-info?subjectId=$sid&se=$se&ep=$ep"
             val jsonRes = safeGetJsonWithHeaders(playUrl, token = token, isPlayback = true)?.first ?: continue
+            
             jsonRes.obj?.get("data")?.obj?.get("streams")?.arr?.forEach { stream ->
                 val obj = stream.obj ?: return@forEach
                 val url = obj["url"]?.str ?: return@forEach
-                val quality = (obj["resolutions"]?.str ?: "Auto") + "P"
+                val resolutions = obj["resolutions"]?.str ?: "Auto"
                 val signCookie = obj["signCookie"]?.str
+                
                 val headers = Headers.Builder()
                     .add("Referer", "https://h5.aoneroom.com/")
                     .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                     .apply { if (!signCookie.isNullOrBlank()) add("Cookie", signCookie) }
                     .build()
-                videos.add(Video(url, quality, url, headers = headers))
+                
+                resolutions.split(",").forEach { res ->
+                    val quality = res.trim() + "P"
+                    videos.add(Video(url, quality, url, headers = headers))
+                }
             }
         }
         return videos
