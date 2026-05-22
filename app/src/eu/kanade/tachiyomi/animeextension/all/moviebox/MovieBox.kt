@@ -252,28 +252,34 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     override fun episodeListParse(response: Response): List<SEpisode> {
         val body = response.body.string().trim()
+        val requestUrl = response.request.url
         
-        val jsonRes = if (body.contains("<html", ignoreCase = true) || !body.startsWith("{")) {
-            val id = response.request.url.queryParameter("subjectId") 
-                ?: response.request.url.queryParameter("detailPath").orEmpty()
-            val param = if (id.all { it.isDigit() }) "subjectId" else "detailPath"
-            safeGetJson("/wefeed-h5api-bff/detail?$param=$id")
-        } else json.parseToJsonElement(body)
-        
-        val jsonRoot = jsonRes.jsonObject
-        val data = jsonRoot["data"]?.jsonObject ?: jsonRoot
-        
-        val subject = data["subject"]?.jsonObject ?: data
-        val subjectId = subject["subjectId"]?.jsonPrimitive?.content 
-            ?: data["subjectId"]?.jsonPrimitive?.content
-            ?: return emptyList()
+        // Recover ID from URL as a master fallback
+        val idFromUrl = requestUrl.queryParameter("subjectId") 
+            ?: requestUrl.queryParameter("detailPath")
+            ?: requestUrl.toString().substringAfterLast("/").substringBefore("?")
             
-        val detailPath = subject["detailPath"]?.jsonPrimitive?.content 
-            ?: data["detailPath"]?.jsonPrimitive?.content 
-            ?: subjectId
+        val jsonRes = try {
+            if (body.contains("<html", ignoreCase = true) || !body.startsWith("{")) {
+                val param = if (idFromUrl.all { it.isDigit() }) "subjectId" else "detailPath"
+                safeGetJson("/wefeed-h5api-bff/detail?$param=$idFromUrl")
+            } else json.parseToJsonElement(body)
+        } catch (e: Exception) { null }
+        
+        val jsonRoot = jsonRes?.jsonObject
+        val data = jsonRoot?.get("data")?.jsonObject ?: jsonRoot
+        
+        val subject = data?.get("subject")?.jsonObject ?: data
+        val subjectId = subject?.get("subjectId")?.jsonPrimitive?.content 
+            ?: data?.get("subjectId")?.jsonPrimitive?.content
+            ?: if (idFromUrl.all { it.isDigit() }) idFromUrl else ""
             
-        val resource = data["resource"]?.jsonObject ?: data
-        val seasons = resource["seasons"]?.jsonArray ?: data["seasons"]?.jsonArray
+        val detailPath = subject?.get("detailPath")?.jsonPrimitive?.content 
+            ?: data?.get("detailPath")?.jsonPrimitive?.content 
+            ?: idFromUrl
+            
+        val resource = data?.get("resource")?.jsonObject ?: data
+        val seasons = resource?.get("seasons")?.jsonArray ?: data?.get("seasons")?.jsonArray
 
         if (!seasons.isNullOrEmpty()) {
             val episodes = mutableListOf<SEpisode>()
@@ -301,14 +307,20 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             if (episodes.isNotEmpty()) return episodes.reversed()
         }
 
-        return listOf(
-            SEpisode.create().apply {
-                name = "Play Movie"
-                episode_number = 1f
-                url = "$subjectId&se=0&ep=0&detailPath=$detailPath"
-                date_upload = System.currentTimeMillis()
-            },
-        )
+        // ABSOLUTE FALLBACK: If we have ANY id, show a play button
+        val finalId = subjectId.ifBlank { detailPath }
+        if (finalId.isNotBlank()) {
+            return listOf(
+                SEpisode.create().apply {
+                    name = "Play Main Feature"
+                    episode_number = 1f
+                    url = "$finalId&se=0&ep=0&detailPath=$detailPath"
+                    date_upload = System.currentTimeMillis()
+                },
+            )
+        }
+        
+        return emptyList()
     }
 
     override fun videoListRequest(episode: SEpisode): Request {
