@@ -96,6 +96,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             "os" to kotlinx.serialization.json.JsonPrimitive("android"),
             "os_version" to kotlinx.serialization.json.JsonPrimitive("16"),
             "device_id" to kotlinx.serialization.json.JsonPrimitive(deviceId),
+            "install_store" to kotlinx.serialization.json.JsonPrimitive("ps"),
             "gaid" to kotlinx.serialization.json.JsonPrimitive("d7578036d13336cc"),
             "brand" to kotlinx.serialization.json.JsonPrimitive("Samsung"),
             "model" to kotlinx.serialization.json.JsonPrimitive("SM-S918B"),
@@ -204,10 +205,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         return null
     }
 
-    override fun latestUpdatesRequest(page: Int): Request = throw Exception("Not used")
-
-    override fun latestUpdatesParse(response: Response): AnimesPage = throw Exception("Not used")
-
     // Popular
     override fun popularAnimeRequest(page: Int): Request {
         val url = "${getPreferredHost()}/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=4516404531735022304&page=$page&perPage=18"
@@ -280,38 +277,49 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val data = jsonRes["data"]?.jsonObject ?: return emptyList()
         val subjectId = data["subject"]?.jsonObject?.get("subjectId")?.jsonPrimitive?.content 
             ?: data["subjectId"]?.jsonPrimitive?.content ?: return emptyList()
-        val detailPath = data["subject"]?.jsonObject?.get("detailPath")?.jsonPrimitive?.content ?: subjectId
         
-        val allIds = mutableListOf(subjectId)
+        // Collect all subject IDs (Original + Dubs)
+        val subjectIds = mutableListOf<Pair<String, String>>()
+        val originalLang = data["subject"]?.jsonObject?.get("lanName")?.jsonPrimitive?.content ?: "Original"
+        subjectIds.add(Pair(subjectId, originalLang))
+        
         val dubs = data["subject"]?.jsonObject?.get("dubs")?.jsonArray ?: data["dubs"]?.jsonArray
-        dubs?.forEach { it.jsonObject["subjectId"]?.jsonPrimitive?.content?.let { sid -> if (sid !in allIds) allIds.add(sid) } }
+        dubs?.forEach { 
+            val sid = it.jsonObject["subjectId"]?.jsonPrimitive?.content
+            val lang = it.jsonObject["lanName"]?.jsonPrimitive?.content ?: "Unknown"
+            if (sid != null && subjectIds.none { p -> p.first == sid }) {
+                subjectIds.add(Pair(sid, lang))
+            }
+        }
 
         val episodes = mutableListOf<SEpisode>()
-        for (sid in allIds) {
-            // First, try seasons directly from details if available
-            val currentSeasons = data["resource"]?.jsonObject?.get("seasons")?.jsonArray ?: data["seasons"]?.jsonArray
-            val seasonsToUse = if (sid == subjectId && !currentSeasons.isNullOrEmpty()) currentSeasons else {
-                val seasonsUrl = "/wefeed-mobile-bff/subject-api/season-info?subjectId=$sid"
-                val seasonsRes = safeGetJson(seasonsUrl, token = token)
-                seasonsRes?.jsonObject?.get("data")?.jsonObject?.get("seasons")?.jsonArray
-            }
+        val seasonsMap = mutableMapOf<Int, MutableSet<Int>>() // Season -> Episode Numbers
+
+        for ((sid, _) in subjectIds) {
+            val seasonsUrl = "/wefeed-mobile-bff/subject-api/season-info?subjectId=$sid"
+            val seasonsRes = runCatching { safeGetJson(seasonsUrl, token = token) }.getOrNull()
+            val seasons = seasonsRes?.jsonObject?.get("data")?.jsonObject?.get("seasons")?.jsonArray
             
-            seasonsToUse?.forEach { seasonEl ->
+            seasons?.forEach { seasonEl ->
                 val season = seasonEl.jsonObject
                 val seNum = season["se"]?.jsonPrimitive?.content?.toIntOrNull() ?: 1
                 val maxEp = season["maxEp"]?.jsonPrimitive?.content?.toIntOrNull() ?: 1
-                
-                for (i in 1..maxEp) {
-                    val epUrl = "$sid&se=$seNum&ep=$i"
-                    if (episodes.none { it.url.contains("se=$seNum&ep=$i") }) {
-                        episodes.add(SEpisode.create().apply {
-                            name = if (maxEp > 1) "Season $seNum - Episode $i" else "Full Movie"
-                            episode_number = i.toFloat()
-                            url = if (!token.isNullOrBlank()) "$epUrl&detailPath=$detailPath|$token" else "$epUrl&detailPath=$detailPath"
-                            date_upload = System.currentTimeMillis()
-                        })
-                    }
-                }
+                val epSet = seasonsMap.getOrPut(seNum) { mutableSetOf() }
+                for (i in 1..maxEp) epSet.add(i)
+            }
+        }
+
+        // Serialized all subject IDs for the video extractor
+        val idsString = subjectIds.joinToString(",") { "${it.first}:${it.second}" }
+
+        seasonsMap.forEach { (seNum, epSet) ->
+            epSet.sorted().forEach { epNum ->
+                episodes.add(SEpisode.create().apply {
+                    name = "Season $seNum - Episode $epNum"
+                    episode_number = epNum.toFloat()
+                    url = "se=$seNum&ep=$epNum&ids=$idsString" + if (!token.isNullOrBlank()) "|$token" else ""
+                    date_upload = System.currentTimeMillis()
+                })
             }
         }
 
@@ -319,46 +327,68 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             SEpisode.create().apply {
                 name = "Play Main Feature"
                 episode_number = 1f
-                url = "$subjectId&se=0&ep=0&detailPath=$detailPath" + if (!token.isNullOrBlank()) "|$token" else ""
+                url = "se=0&ep=0&ids=$idsString" + if (!token.isNullOrBlank()) "|$token" else ""
                 date_upload = System.currentTimeMillis()
             }
         )
     }
 
     override fun videoListRequest(episode: SEpisode): Request {
-        val epParts = episode.url.split("|")
-        val token = if (epParts.size > 1) epParts[1] else null
-        val parts = epParts[0].split("&")
-        val sid = parts[0]
-        val se = parts.find { it.startsWith("se=") }?.split("=")?.get(1) ?: "0"
-        val ep = parts.find { it.startsWith("ep=") }?.split("=")?.get(1) ?: "0"
-        
-        val url = "${getPreferredHost()}/wefeed-mobile-bff/subject-api/play-info?subjectId=$sid&se=$se&ep=$ep"
-        return GET(url, getApiHeaders(url, token = token))
+        // This request is just a placeholder, videoListParse will do the real work
+        return GET(baseUrl, headersBuilder().build())
     }
 
     override fun videoListParse(response: Response): List<Video> {
-        val body = response.body.string()
-        if (body.contains("<html", ignoreCase = true)) return emptyList()
-        val jsonRes = json.parseToJsonElement(body).jsonObject
-        val data = jsonRes["data"]?.jsonObject ?: return emptyList()
-        val videos = mutableListOf<Video>()
+        val episodeUrl = response.request.header("X-Tachiyomi-Episode-Url") ?: response.request.url.toString()
+        val epParts = episodeUrl.split("|")
+        val token = if (epParts.size > 1) epParts[1] else null
         
-        data["streams"]?.jsonArray?.forEach { stream ->
-            val obj = stream.jsonObject
-            val url = obj["url"]?.jsonPrimitive?.content ?: return@forEach
-            val quality = (obj["resolutions"]?.jsonPrimitive?.content ?: "Auto") + "P"
-            val signCookie = obj["signCookie"]?.jsonPrimitive?.content
+        val params = epParts[0].split("&")
+        val se = params.find { it.startsWith("se=") }?.substringAfter("=") ?: "0"
+        val ep = params.find { it.startsWith("ep=") }?.substringAfter("=") ?: "0"
+        val idsString = params.find { it.startsWith("ids=") }?.substringAfter("=") ?: ""
+        
+        val subjectIds = idsString.split(",").mapNotNull { 
+            val p = it.split(":")
+            if (p.size == 2) Pair(p[0], p[1]) else null
+        }
+
+        val videos = mutableListOf<Video>()
+        val videoHeaders = Headers.Builder()
+            .add("Referer", "https://h5.aoneroom.com/")
+            .add("User-Agent", "Mozilla/5.0")
+            .build()
+
+        for ((sid, lang) in subjectIds) {
+            val playUrl = "/wefeed-mobile-bff/subject-api/play-info?subjectId=$sid&se=$se&ep=$ep"
+            val jsonRes = runCatching { safeGetJson(playUrl, token = token) }.getOrNull() ?: continue
+            val data = jsonRes.jsonObject["data"]?.jsonObject ?: continue
             
-            val headers = Headers.Builder()
-                .add("Referer", "https://h5.aoneroom.com/")
-                .add("User-Agent", "Mozilla/5.0")
-                .apply { if (!signCookie.isNullOrBlank()) add("Cookie", signCookie) }
-                .build()
+            data["streams"]?.jsonArray?.forEach { stream ->
+                val obj = stream.jsonObject
+                val url = obj["url"]?.jsonPrimitive?.content ?: return@forEach
+                val quality = (obj["resolutions"]?.jsonPrimitive?.content ?: "Auto") + "P ($lang)"
+                val signCookie = obj["signCookie"]?.jsonPrimitive?.content
                 
-            videos.add(Video(url, quality, url, headers = headers))
+                val headers = videoHeaders.newBuilder()
+                    .apply { if (!signCookie.isNullOrBlank()) add("Cookie", signCookie) }
+                    .build()
+                    
+                videos.add(Video(url, quality, url, headers = headers))
+            }
         }
         return videos
+    }
+
+    override fun List<Video>.sort(): List<Video> {
+        return this.sortedByDescending { 
+            when {
+                it.quality.contains("1080") -> 3
+                it.quality.contains("720") -> 2
+                it.quality.contains("480") -> 1
+                else -> 0
+            }
+        }
     }
 
     private fun parseSubjectListPage(data: JsonObject): AnimesPage {
