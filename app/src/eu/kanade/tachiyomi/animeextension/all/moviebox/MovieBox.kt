@@ -75,7 +75,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val contentType = if (method == "POST") "application/json; charset=utf-8" else "application/json"
         
         return Headers.Builder()
-            .add("user-agent", "com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; sdk_gphone64_x86_64; Build/BP22.250325.006; Cronet/133.0.6876.3)")
+            .add("user-agent", "com.community.oneroom/50020088 (Linux; U; Android 13; en_US; Samsung; Build/TQ3A.230901.001; Cronet/145.0.7582.0)")
             .add("accept", "application/json")
             .add("content-type", contentType)
             .add("connection", "keep-alive")
@@ -95,22 +95,25 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     private fun getClientInfo(): String {
         return JsonObject(mapOf(
-            "package_name" to kotlinx.serialization.json.JsonPrimitive("com.community.mbox.in"),
-            "version_name" to kotlinx.serialization.json.JsonPrimitive("3.0.03.0529.03"),
-            "version_code" to kotlinx.serialization.json.JsonPrimitive(50020042),
+            "package_name" to kotlinx.serialization.json.JsonPrimitive("com.community.oneroom"),
+            "version_name" to kotlinx.serialization.json.JsonPrimitive("3.0.13.0325.03"),
+            "version_code" to kotlinx.serialization.json.JsonPrimitive(50020088),
             "os" to kotlinx.serialization.json.JsonPrimitive("android"),
-            "os_version" to kotlinx.serialization.json.JsonPrimitive("16"),
+            "os_version" to kotlinx.serialization.json.JsonPrimitive("13"),
             "device_id" to kotlinx.serialization.json.JsonPrimitive(deviceId),
             "install_store" to kotlinx.serialization.json.JsonPrimitive("ps"),
-            "gaid" to kotlinx.serialization.json.JsonPrimitive("d7578036d13336cc"),
-            "brand" to kotlinx.serialization.json.JsonPrimitive("google"),
-            "model" to kotlinx.serialization.json.JsonPrimitive("sdk_gphone64_x86_64"),
+            "gaid" to kotlinx.serialization.json.JsonPrimitive("1b2212c1-dadf-43c3-a0c8-bd6ce48ae22d"),
+            "brand" to kotlinx.serialization.json.JsonPrimitive("Samsung"),
+            "model" to kotlinx.serialization.json.JsonPrimitive("SM-S918B"),
             "system_language" to kotlinx.serialization.json.JsonPrimitive("en"),
             "net" to kotlinx.serialization.json.JsonPrimitive("NETWORK_WIFI"),
-            "region" to kotlinx.serialization.json.JsonPrimitive("IN"),
+            "region" to kotlinx.serialization.json.JsonPrimitive("US"),
             "timezone" to kotlinx.serialization.json.JsonPrimitive("Asia/Calcutta"),
             "sp_code" to kotlinx.serialization.json.JsonPrimitive(""),
             "X-Play-Mode" to kotlinx.serialization.json.JsonPrimitive("1"),
+            "X-Idle-Data" to kotlinx.serialization.json.JsonPrimitive("1"),
+            "X-Family-Mode" to kotlinx.serialization.json.JsonPrimitive("0"),
+            "X-Content-Mode" to kotlinx.serialization.json.JsonPrimitive("0"),
         )).toString()
     }
 
@@ -161,13 +164,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         } else ""
 
         val bodyLength = bodyBytes?.size?.toString() ?: ""
-        return "${method.uppercase()}\n" +
-                "${accept ?: ""}\n" +
-                "${contentType ?: ""}\n" +
-                "$bodyLength\n" +
-                "$timestamp\n" +
-                "$bodyHash\n" +
-                canonicalUrl
+        return "${method.uppercase()}\n${accept ?: ""}\n${contentType ?: ""}\n$bodyLength\n$timestamp\n$bodyHash\n$canonicalUrl"
     }
 
     private fun md5ByteArray(input: ByteArray): String {
@@ -185,7 +182,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     ): String {
         val canonical = buildCanonicalString(method, accept, contentType, url, body, timestamp)
         
-        // Final corrected double decode aligned with CloudStream
+        // Correct double-decode logic
         val secretStr = String(Base64.decode(secretKeyDefault, Base64.DEFAULT))
         val secretBytes = Base64.decode(secretStr, Base64.DEFAULT)
 
@@ -230,7 +227,9 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     // Popular
     override fun popularAnimeRequest(page: Int): Request {
-        val url = "${getPreferredHost()}/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=4516404531735022304&page=$page&perPage=18"
+        val host = getPreferredHost()
+        val path = if (host.contains("api3")) "/wefeed-mobile-bff/tab/ranking-list" else "/wefeed-h5api-bff/ranking-list/content"
+        val url = "$host$path?tabId=0&categoryType=4516404531735022304&page=$page&perPage=18"
         return GET(url, getApiHeaders(url))
     }
 
@@ -246,7 +245,9 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     // Search
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
         if (query.isNotBlank()) {
-            val url = "${getPreferredHost()}/wefeed-mobile-bff/subject-api/search/v2"
+            val host = getPreferredHost()
+            val path = if (host.contains("api3")) "/wefeed-mobile-bff/subject-api/search/v2" else "/wefeed-h5api-bff/subject/search"
+            val url = "$host$path"
             val bodyData = """{"page":$page,"perPage":20,"keyword":"$query"}"""
             val body = bodyData.toRequestBody("application/json; charset=utf-8".toMediaType())
             return POST(url, getApiHeaders(url, "POST", bodyData), body)
@@ -259,7 +260,10 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     // Details
     override fun animeDetailsRequest(anime: SAnime): Request {
         val id = anime.url.substringAfterLast("/").substringBefore("|")
-        val url = "${getPreferredHost()}/wefeed-mobile-bff/subject-api/get?subjectId=$id"
+        val host = getPreferredHost()
+        val path = if (host.contains("api3")) "/wefeed-mobile-bff/subject-api/get" else "/wefeed-h5api-bff/detail"
+        val param = if (id.all { it.isDigit() }) "subjectId" else "detailPath"
+        val url = "$host$path?$param=$id"
         return GET(url, getApiHeaders(url, isDetails = true))
     }
 
@@ -304,11 +308,11 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         } else json.parseToJsonElement(body)
         
         val data = jsonRes?.obj?.get("data")?.obj ?: return emptyList()
-        val subjectId = data["subject"]?.obj?.get("subjectId")?.str 
+        val mainSubjectId = data["subject"]?.obj?.get("subjectId")?.str 
             ?: data["subjectId"]?.str ?: return emptyList()
-        val detailPath = data["subject"]?.obj?.get("detailPath")?.str ?: subjectId
+        val detailPath = data["subject"]?.obj?.get("detailPath")?.str ?: mainSubjectId
         
-        val allIds = mutableListOf(subjectId)
+        val allIds = mutableListOf(mainSubjectId)
         val dubs = data["subject"]?.obj?.get("dubs")?.arr ?: data["dubs"]?.arr
         dubs?.forEach { it.obj?.get("subjectId")?.str?.let { sid -> if (sid !in allIds) allIds.add(sid) } }
 
@@ -318,7 +322,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         for (sid in allIds) {
             val seasonsUrl = "/wefeed-mobile-bff/subject-api/season-info?subjectId=$sid"
             val seasonsRes = safeGetJsonWithHeaders(seasonsUrl, token = token, isDetails = true)?.first
-            
             val seasonsData = seasonsRes?.obj?.get("data")?.obj ?: seasonsRes?.obj ?: data
             val resource = seasonsData["resource"]?.obj ?: seasonsData
             val seasons = resource["seasons"]?.arr ?: seasonsData["seasons"]?.arr
@@ -348,7 +351,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             SEpisode.create().apply {
                 name = "Play Movie"
                 episode_number = 1f
-                url = "0|0|$subjectId|$detailPath" + if (!token.isNullOrBlank()) "|$token" else ""
+                url = "0|0|$mainSubjectId|$detailPath" + if (!token.isNullOrBlank()) "|$token" else ""
                 date_upload = System.currentTimeMillis()
             }
         )
@@ -372,7 +375,11 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                 val url = obj["url"]?.str ?: return@forEach
                 val quality = (obj["resolutions"]?.str ?: "Auto") + "P"
                 val signCookie = obj["signCookie"]?.str
-                val headers = Headers.Builder().add("Referer", "https://h5.aoneroom.com/").add("User-Agent", "Mozilla/5.0").apply { if (!signCookie.isNullOrBlank()) add("Cookie", signCookie) }.build()
+                val headers = Headers.Builder()
+                    .add("Referer", "https://h5.aoneroom.com/")
+                    .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .apply { if (!signCookie.isNullOrBlank()) add("Cookie", signCookie) }
+                    .build()
                 videos.add(Video(url, quality, url, headers = headers))
             }
         }
