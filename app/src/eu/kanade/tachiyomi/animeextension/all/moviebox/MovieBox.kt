@@ -69,12 +69,13 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     private fun getMobileHeaders(url: String, method: String = "GET", body: String? = null): Headers {
         val timestamp = System.currentTimeMillis()
+        val contentType = if (method == "POST") "application/json; charset=utf-8" else "application/json"
         return Headers.Builder()
-            .add("user-agent", "com.community.oneroom/50020088 (Linux; U; Android 13; en_US; Samsung; Build/TQ3A.230901.001; Cronet/145.0.7582.0)")
+            .add("user-agent", "com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; Samsung; Build/BP22.250325.006; Cronet/133.0.6876.3)")
             .add("accept", "application/json")
-            .add("content-type", "application/json")
+            .add("content-type", contentType)
             .add("x-client-token", generateXClientToken(timestamp))
-            .add("x-tr-signature", generateXTrSignature(method, "application/json", "application/json", url, body, timestamp = timestamp))
+            .add("x-tr-signature", generateXTrSignature(method, "application/json", contentType, url, body, timestamp = timestamp))
             .add("x-client-info", getClientInfo())
             .add("x-client-status", "0")
             .build()
@@ -189,7 +190,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     // Popular: High-Quality Trending API
     override fun popularAnimeRequest(page: Int): Request {
-        val url = "$mobileApiBaseUrl/wefeed-mobile-bff/ranking-list/content?id=4516404531735022304&page=$page&perPage=18"
+        val url = "$mobileApiBaseUrl/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=4516404531735022304&page=$page&perPage=18"
         return GET(url, getMobileHeaders(url))
     }
 
@@ -207,12 +208,12 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val rankingFilter = filters.find { it is RankingFilter } as? RankingFilter
         if (query.isEmpty() && rankingFilter != null && rankingFilter.state > 0) {
             val rankingId = rankingFilter.toId()
-            val url = "$mobileApiBaseUrl/wefeed-mobile-bff/ranking-list/content?id=$rankingId&page=$page&perPage=18"
+            val url = "$mobileApiBaseUrl/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=$rankingId&page=$page&perPage=18"
             return GET(url, getMobileHeaders(url))
         }
 
         if (query.isNotBlank()) {
-            val url = "$mobileApiBaseUrl/wefeed-mobile-bff/subject-api/search"
+            val url = "$mobileApiBaseUrl/wefeed-mobile-bff/subject-api/search/v2"
             val bodyData = JsonObject(
                 mapOf(
                     "keyword" to kotlinx.serialization.json.JsonPrimitive(query),
@@ -220,7 +221,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                     "perPage" to kotlinx.serialization.json.JsonPrimitive(18),
                 ),
             ).toString()
-            val body = bodyData.toRequestBody("application/json".toMediaType())
+            val body = bodyData.toRequestBody("application/json; charset=utf-8".toMediaType())
             return POST(url, getMobileHeaders(url, "POST", bodyData), body)
         }
 
@@ -550,7 +551,14 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val bodyString = response.body.string()
         val jsonRes = json.parseToJsonElement(bodyString).jsonObject
         val data = jsonRes["data"]?.jsonObject ?: return AnimesPage(emptyList(), false)
-        val items = data["subjectList"]?.jsonArray ?: data["items"]?.jsonArray ?: return AnimesPage(emptyList(), false)
+        
+        // Handle both 'subjectList' and 'results' (for search v2)
+        val rawItems = data["subjectList"]?.jsonArray 
+            ?: data["items"]?.jsonArray 
+            ?: data["results"]?.jsonArray?.mapNotNull { it.jsonObject["subjects"]?.jsonArray }?.flatten()
+            ?: return AnimesPage(emptyList(), false)
+
+        val items = rawItems as List<JsonElement>
 
         val animes = items.mapNotNull { item ->
             val obj = item.jsonObject
