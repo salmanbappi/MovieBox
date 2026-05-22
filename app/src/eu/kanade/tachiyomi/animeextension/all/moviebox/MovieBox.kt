@@ -74,7 +74,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val contentType = if (method == "POST") "application/json; charset=utf-8" else "application/json"
         
         return Headers.Builder()
-            .add("user-agent", "com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; Samsung; Build/BP22.250325.006; Cronet/133.0.6876.3)")
+            .add("user-agent", "com.community.oneroom/50020088 (Linux; U; Android 13; en_US; Samsung; Build/TQ3A.230901.001; Cronet/145.0.7582.0)")
             .add("accept", "application/json")
             .add("content-type", contentType)
             .add("connection", "keep-alive")
@@ -82,7 +82,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             .add("x-tr-signature", generateXTrSignature(method, "application/json", contentType, url, body, timestamp = timestamp))
             .add("x-client-info", getClientInfo())
             .add("x-client-status", "0")
-            .add("x-play-mode", "2")
+            .add("x-play-mode", "1")
             .apply {
                 if (!token.isNullOrBlank()) {
                     add("Authorization", "Bearer $token")
@@ -93,21 +93,26 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     private fun getClientInfo(): String {
         return JsonObject(mapOf(
-            "package_name" to kotlinx.serialization.json.JsonPrimitive("com.community.mbox.in"),
-            "version_name" to kotlinx.serialization.json.JsonPrimitive("3.0.03.0529.03"),
-            "version_code" to kotlinx.serialization.json.JsonPrimitive(50020042),
+            "package_name" to kotlinx.serialization.json.JsonPrimitive("com.community.oneroom"),
+            "version_name" to kotlinx.serialization.json.JsonPrimitive("3.0.13.0325.03"),
+            "version_code" to kotlinx.serialization.json.JsonPrimitive(50020088),
             "os" to kotlinx.serialization.json.JsonPrimitive("android"),
-            "os_version" to kotlinx.serialization.json.JsonPrimitive("16"),
+            "os_version" to kotlinx.serialization.json.JsonPrimitive("13"),
+            "install_ch" to kotlinx.serialization.json.JsonPrimitive("ps"),
             "device_id" to kotlinx.serialization.json.JsonPrimitive(deviceId),
             "install_store" to kotlinx.serialization.json.JsonPrimitive("ps"),
-            "gaid" to kotlinx.serialization.json.JsonPrimitive("d7578036d13336cc"),
+            "gaid" to kotlinx.serialization.json.JsonPrimitive("1b2212c1-dadf-43c3-a0c8-bd6ce48ae22d"),
             "brand" to kotlinx.serialization.json.JsonPrimitive("Samsung"),
             "model" to kotlinx.serialization.json.JsonPrimitive("SM-S918B"),
             "system_language" to kotlinx.serialization.json.JsonPrimitive("en"),
             "net" to kotlinx.serialization.json.JsonPrimitive("NETWORK_WIFI"),
-            "region" to kotlinx.serialization.json.JsonPrimitive("IN"),
+            "region" to kotlinx.serialization.json.JsonPrimitive("US"),
             "timezone" to kotlinx.serialization.json.JsonPrimitive("Asia/Calcutta"),
             "sp_code" to kotlinx.serialization.json.JsonPrimitive(""),
+            "X-Play-Mode" to kotlinx.serialization.json.JsonPrimitive("1"),
+            "X-Idle-Data" to kotlinx.serialization.json.JsonPrimitive("1"),
+            "X-Family-Mode" to kotlinx.serialization.json.JsonPrimitive("0"),
+            "X-Content-Mode" to kotlinx.serialization.json.JsonPrimitive("0"),
         )).toString()
     }
 
@@ -313,14 +318,11 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val seasonsMap = mutableMapOf<Int, MutableSet<Int>>()
 
         for (sid in allIds) {
-            val currentSeasons = data["resource"]?.obj?.get("seasons")?.arr ?: data["seasons"]?.arr
-            val seasonsToUse = if (sid == subjectId && currentSeasons != null) currentSeasons else {
-                val seasonsUrl = "/wefeed-mobile-bff/subject-api/season-info?subjectId=$sid"
-                val seasonsRes = safeGetJsonWithHeaders(seasonsUrl, token = token)?.first
-                seasonsRes?.obj?.get("data")?.obj?.get("seasons")?.arr
-            }
+            val seasonsUrl = "/wefeed-mobile-bff/subject-api/season-info?subjectId=$sid"
+            val seasonsRes = safeGetJsonWithHeaders(seasonsUrl, token = token)?.first
+            val seasons = seasonsRes?.obj?.get("data")?.obj?.get("seasons")?.arr
             
-            seasonsToUse?.forEach { seasonEl ->
+            seasons?.forEach { seasonEl ->
                 val season = seasonEl.obj ?: return@forEach
                 val seNum = season["se"]?.str?.toIntOrNull() ?: 1
                 val maxEp = season["maxEp"]?.str?.toIntOrNull() ?: 1
@@ -343,7 +345,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
         return if (episodes.isNotEmpty()) episodes.reversed() else listOf(
             SEpisode.create().apply {
-                name = "Play Movie"
+                name = "Play Main Feature"
                 episode_number = 1f
                 url = "se=0&ep=0&ids=$idsString&detailPath=$detailPath" + if (!token.isNullOrBlank()) "|$token" else ""
                 date_upload = System.currentTimeMillis()
@@ -403,7 +405,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                 thumbnail_url = subject["cover"]?.obj?.get("url")?.str
             }
         }
-        return AnimesPage(animes, data["pager"]?.obj?.get("hasMore")?.jsonPrimitive?.booleanOrNull ?: (animes.size >= 12))
+        return AnimesPage(animes, data["pager"]?.obj?.get("hasMore")?.bool ?: (animes.size >= 12))
     }
 
     private val JsonElement?.obj get() = this as? JsonObject
