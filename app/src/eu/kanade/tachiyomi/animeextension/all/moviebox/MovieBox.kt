@@ -23,6 +23,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -59,7 +60,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         "https://h5-api.aoneroom.com"
     )
 
-    private val secretKeyDefault = "base64Decode:NzZpUmwwN3MweFNOOWpxbUVXQXQ3OUVCSlp1bElRSXNWNjRGWnIyTw=="
+    private val secretKeyDefault = "NzZpUmwwN3MweFNOOWpxbUVXQXQ3OUVCSlp1bElRSXNWNjRGWnIyTw=="
 
     private val json: Json by lazy { Injekt.get() }
 
@@ -184,8 +185,8 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     ): String {
         val canonical = buildCanonicalString(method, accept, contentType, url, body, timestamp)
         
-        val rawSecret = secretKeyDefault.removePrefix("base64Decode:")
-        val secretStr = String(Base64.decode(rawSecret, Base64.DEFAULT))
+        // Final corrected double decode aligned with CloudStream
+        val secretStr = String(Base64.decode(secretKeyDefault, Base64.DEFAULT))
         val secretBytes = Base64.decode(secretStr, Base64.DEFAULT)
 
         val mac = Mac.getInstance("HmacMD5")
@@ -202,7 +203,13 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     private fun safeGetJsonWithHeaders(urlPath: String, isPost: Boolean = false, bodyData: String? = null, token: String? = null, isDetails: Boolean = false, isPlayback: Boolean = false): Pair<JsonElement, Headers>? {
         for (host in apiHosts) {
-            val url = host + urlPath
+            val adaptivePath = if (host.contains("api3")) {
+                urlPath.replace("/wefeed-h5api-bff/detail", "/wefeed-mobile-bff/subject-api/get")
+            } else {
+                urlPath.replace("/wefeed-mobile-bff/subject-api/get", "/wefeed-h5api-bff/detail")
+            }
+            
+            val url = host + adaptivePath
             val request = if (isPost) {
                 val body = bodyData.orEmpty().toRequestBody("application/json; charset=utf-8".toMediaType())
                 POST(url, getApiHeaders(url, "POST", bodyData, token = token, isDetails = isDetails, isPlayback = isPlayback), body)
@@ -214,7 +221,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                 val body = response.body.string().trim()
                 if (body.isEmpty() || body.contains("<html", ignoreCase = true) || !body.startsWith("{")) continue
                 val jsonRes = json.parseToJsonElement(body)
-                if (jsonRes.obj?.get("code")?.jsonPrimitive?.contentOrNull?.toIntOrNull() != 0) continue
+                if (jsonRes.obj?.get("code")?.jsonPrimitive?.intOrNull != 0) continue
                 return Pair(jsonRes, response.headers)
             } catch (e: Exception) { continue }
         }
@@ -229,7 +236,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     override fun popularAnimeParse(response: Response): AnimesPage {
         val body = response.body.string()
-        val jsonRes = if (!body.startsWith("{")) {
+        val jsonRes = if (!body.trim().startsWith("{")) {
             safeGetJsonWithHeaders("/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=4516404531735022304&page=1&perPage=18")?.first
         } else json.parseToJsonElement(body)
         val data = jsonRes?.obj?.get("data")?.obj ?: return AnimesPage(emptyList(), false)
@@ -244,8 +251,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             val body = bodyData.toRequestBody("application/json; charset=utf-8".toMediaType())
             return POST(url, getApiHeaders(url, "POST", bodyData), body)
         }
-        val url = "${getPreferredHost()}/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=4516404531735022304&page=$page&perPage=18"
-        return GET(url, getApiHeaders(url))
+        return popularAnimeRequest(page)
     }
 
     override fun searchAnimeParse(response: Response): AnimesPage = popularAnimeParse(response)
@@ -262,14 +268,14 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         var token = xUser?.let { runCatching { json.parseToJsonElement(it).obj?.get("token")?.str }.getOrNull() }
         
         val body = response.body.string()
-        val jsonRes = if (!body.startsWith("{")) {
+        val jsonRes = if (!body.trim().startsWith("{")) {
             val id = response.request.url.queryParameter("subjectId") ?: response.request.url.toString().substringAfterLast("/")
             val result = safeGetJsonWithHeaders("/wefeed-mobile-bff/subject-api/get?subjectId=$id", isDetails = true)
             token = result?.second?.get("x-user")?.let { runCatching { json.parseToJsonElement(it).obj?.get("token")?.str }.getOrNull() }
             result?.first
         } else json.parseToJsonElement(body)
         
-        val data = jsonRes?.obj?.get("data")?.obj ?: throw Exception("No metadata")
+        val data = jsonRes?.obj?.get("data")?.obj ?: throw Exception("Details not found")
         val subject = data["subject"]?.obj ?: data
 
         return SAnime.create().apply {
@@ -283,12 +289,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         }
     }
 
-    override fun episodeListRequest(anime: SAnime): Request {
-        val id = anime.url.substringAfterLast("/").substringBefore("|")
-        val token = if (anime.url.contains("|")) anime.url.substringAfterLast("|") else null
-        val url = "${getPreferredHost()}/wefeed-mobile-bff/subject-api/get?subjectId=$id"
-        return GET(url, getApiHeaders(url, token = token, isDetails = true))
-    }
+    override fun episodeListRequest(anime: SAnime): Request = animeDetailsRequest(anime)
 
     override fun episodeListParse(response: Response): List<SEpisode> {
         val xUser = response.header("x-user")
@@ -297,16 +298,17 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val token = headerToken ?: (if (urlParts.size > 1) urlParts[1] else null)
         
         val body = response.body.string()
-        val jsonRes = if (!body.startsWith("{")) {
+        val jsonRes = if (!body.trim().startsWith("{")) {
             val id = response.request.url.queryParameter("subjectId") ?: response.request.url.toString().substringAfterLast("/")
             safeGetJsonWithHeaders("/wefeed-mobile-bff/subject-api/get?subjectId=$id", token = token, isDetails = true)?.first
         } else json.parseToJsonElement(body)
         
         val data = jsonRes?.obj?.get("data")?.obj ?: return emptyList()
-        val mainSubjectId = data["subject"]?.obj?.get("subjectId")?.str ?: return emptyList()
-        val detailPath = data["subject"]?.obj?.get("detailPath")?.str ?: mainSubjectId
+        val subjectId = data["subject"]?.obj?.get("subjectId")?.str 
+            ?: data["subjectId"]?.str ?: return emptyList()
+        val detailPath = data["subject"]?.obj?.get("detailPath")?.str ?: subjectId
         
-        val allIds = mutableListOf(mainSubjectId)
+        val allIds = mutableListOf(subjectId)
         val dubs = data["subject"]?.obj?.get("dubs")?.arr ?: data["dubs"]?.arr
         dubs?.forEach { it.obj?.get("subjectId")?.str?.let { sid -> if (sid !in allIds) allIds.add(sid) } }
 
@@ -316,12 +318,15 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         for (sid in allIds) {
             val seasonsUrl = "/wefeed-mobile-bff/subject-api/season-info?subjectId=$sid"
             val seasonsRes = safeGetJsonWithHeaders(seasonsUrl, token = token, isDetails = true)?.first
-            val seasons = seasonsRes?.obj?.get("data")?.obj?.get("seasons")?.arr
             
+            val seasonsData = seasonsRes?.obj?.get("data")?.obj ?: seasonsRes?.obj ?: data
+            val resource = seasonsData["resource"]?.obj ?: seasonsData
+            val seasons = resource["seasons"]?.arr ?: seasonsData["seasons"]?.arr
+
             seasons?.forEach { seasonEl ->
                 val season = seasonEl.obj ?: return@forEach
-                val seNum = season["se"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 1
-                val maxEp = season["maxEp"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 1
+                val seNum = season["se"]?.jsonPrimitive?.intOrNull ?: 1
+                val maxEp = season["maxEp"]?.jsonPrimitive?.intOrNull ?: 1
                 val epSet = seasonsMap.getOrPut(seNum) { mutableSetOf() }
                 for (i in 1..maxEp) epSet.add(i)
             }
@@ -343,15 +348,13 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             SEpisode.create().apply {
                 name = "Play Movie"
                 episode_number = 1f
-                url = "0|0|$mainSubjectId|$detailPath" + if (!token.isNullOrBlank()) "|$token" else ""
+                url = "0|0|$subjectId|$detailPath" + if (!token.isNullOrBlank()) "|$token" else ""
                 date_upload = System.currentTimeMillis()
             }
         )
     }
 
-    override fun videoListRequest(episode: SEpisode): Request {
-        return GET(baseUrl, headersBuilder().build())
-    }
+    override fun videoListRequest(episode: SEpisode): Request = GET(baseUrl, headersBuilder().build())
 
     override fun videoListParse(response: Response): List<Video> {
         val episodeUrl = response.request.header("X-Tachiyomi-Episode-Url") ?: response.request.url.toString()
@@ -367,9 +370,10 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             jsonRes.obj?.get("data")?.obj?.get("streams")?.arr?.forEach { stream ->
                 val obj = stream.obj ?: return@forEach
                 val url = obj["url"]?.str ?: return@forEach
+                val quality = (obj["resolutions"]?.str ?: "Auto") + "P"
                 val signCookie = obj["signCookie"]?.str
                 val headers = Headers.Builder().add("Referer", "https://h5.aoneroom.com/").add("User-Agent", "Mozilla/5.0").apply { if (!signCookie.isNullOrBlank()) add("Cookie", signCookie) }.build()
-                videos.add(Video(url, (obj["resolutions"]?.str ?: "Auto") + "P", url, headers = headers))
+                videos.add(Video(url, quality, url, headers = headers))
             }
         }
         return videos
