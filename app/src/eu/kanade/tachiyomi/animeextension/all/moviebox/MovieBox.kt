@@ -437,9 +437,13 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val items = data["subjectList"]?.arr ?: data["items"]?.arr ?: data["subjects"]?.arr ?: data["results"]?.arr?.mapNotNull { it.obj?.get("subjects")?.arr }?.flatten() ?: return AnimesPage(emptyList(), false)
         val animes = (items as List<JsonElement>).mapNotNull { item ->
             val obj = item.obj ?: return@mapNotNull null
-            val subject = if (obj.containsKey("subject")) obj["subject"]?.obj else obj ?: return@mapNotNull null
+            val subject = obj["subject"]?.obj ?: obj
             val id = subject["subjectId"]?.str ?: subject["id"]?.str ?: return@mapNotNull null
-            SAnime.create().apply { title = subject["title"]?.str ?: ""; url = "/movies/$id"; thumbnail_url = subject["cover"]?.obj?.get("url")?.str }
+            SAnime.create().apply {
+                title = subject["title"]?.str ?: ""
+                url = "/movies/$id"
+                thumbnail_url = subject["cover"]?.obj?.get("url")?.str
+            }
         }
         val pager = data["pager"]?.obj
         val hasMore = (pager?.get("nextPage")?.str?.isNotBlank() ?: false) || (pager?.get("hasMore")?.bool ?: false) || (animes.size >= 12)
