@@ -242,7 +242,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val jsonRes = if (!body.trim().startsWith("{")) {
             val url = response.request.url.toString()
             val path = "/" + url.substringAfter(".com/").substringAfter(".world/")
-            safeGetJsonVerified(path)?.first
+            safeGetJsonWithHeaders(path)?.first
         } else json.parseToJsonElement(body)
         val data = jsonRes?.obj?.get("data")?.obj ?: return AnimesPage(emptyList(), false)
         return parseSubjectListPage(data)
@@ -275,9 +275,9 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                 val buffer = okio.Buffer()
                 requestBody.writeTo(buffer)
                 val bodyData = buffer.readUtf8()
-                safeGetJsonVerified(path, isPost = true, bodyData = bodyData)?.first
+                safeGetJsonWithHeaders(path, isPost = true, bodyData = bodyData)?.first
             } else {
-                safeGetJsonVerified(path)?.first
+                safeGetJsonWithHeaders(path)?.first
             }
         } else json.parseToJsonElement(body)
         val data = jsonRes?.obj?.get("data")?.obj ?: return AnimesPage(emptyList(), false)
