@@ -70,13 +70,13 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     private fun getMobileHeaders(url: String, method: String = "GET", body: String? = null): Headers {
         val timestamp = System.currentTimeMillis()
         return Headers.Builder()
-            .add("User-Agent", "com.community.oneroom/50020088 (Linux; U; Android 13; en_US; Samsung; Build/TQ3A.230901.001; Cronet/145.0.7582.0)")
-            .add("Accept", "application/json")
-            .add("Content-Type", "application/json")
-            .add("X-Client-Token", generateXClientToken(timestamp))
+            .add("user-agent", "com.community.oneroom/50020088 (Linux; U; Android 13; en_US; Samsung; Build/TQ3A.230901.001; Cronet/145.0.7582.0)")
+            .add("accept", "application/json")
+            .add("content-type", "application/json")
+            .add("x-client-token", generateXClientToken(timestamp))
             .add("x-tr-signature", generateXTrSignature(method, "application/json", "application/json", url, body, timestamp = timestamp))
-            .add("X-Client-Info", getClientInfo())
-            .add("X-Client-Status", "0")
+            .add("x-client-info", getClientInfo())
+            .add("x-client-status", "0")
             .build()
     }
 
@@ -96,7 +96,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             "system_language" to kotlinx.serialization.json.JsonPrimitive("en"),
             "net" to kotlinx.serialization.json.JsonPrimitive("NETWORK_WIFI"),
             "region" to kotlinx.serialization.json.JsonPrimitive("US"),
-            "timezone" to kotlinx.serialization.json.JsonPrimitive(TimeZone.getDefault().id),
+            "timezone" to kotlinx.serialization.json.JsonPrimitive("Asia/Calcutta"),
             "sp_code" to kotlinx.serialization.json.JsonPrimitive(""),
             "X-Play-Mode" to kotlinx.serialization.json.JsonPrimitive("1"),
             "X-Idle-Data" to kotlinx.serialization.json.JsonPrimitive("1"),
@@ -134,10 +134,10 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val path = uri.encodedPath
         
         val query = if (uri.querySize > 0) {
-            (0 until uri.querySize).map { i ->
-                uri.queryParameterName(i) to uri.queryParameterValue(i)
-            }.sortedBy { it.first }.joinToString("&") { (key, value) ->
-                "$key=$value"
+            uri.queryParameterNames.sorted().joinToString("&") { name ->
+                uri.queryParameterValues(name).joinToString("&") { value ->
+                    "$name=$value"
+                }
             }
         } else ""
         
@@ -189,7 +189,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     // Popular: High-Quality Trending API
     override fun popularAnimeRequest(page: Int): Request {
-        val url = "$mobileApiBaseUrl/wefeed-mobile-bff/subject-api/trending?page=$page&perPage=18"
+        val url = "$mobileApiBaseUrl/wefeed-mobile-bff/ranking-list/content?id=4516404531735022304&page=$page&perPage=18"
         return GET(url, getMobileHeaders(url))
     }
 
@@ -304,10 +304,15 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val data = jsonRes["data"]?.jsonObject ?: return emptyList()
         val subject = data["subject"]?.jsonObject ?: return emptyList()
         val subjectId = subject["subjectId"]?.jsonPrimitive?.content ?: return emptyList()
-        val subjectType = subject["subjectType"]?.jsonPrimitive?.content?.toIntOrNull() ?: 1
-        val seasons = data["resource"]?.jsonObject?.get("seasons")?.jsonArray
+        
+        // Fetch seasons from dedicated mobile endpoint for 100% accuracy
+        val seasonsUrl = "$mobileApiBaseUrl/wefeed-mobile-bff/subject-api/season-info?subjectId=$subjectId"
+        val seasonsRequest = GET(seasonsUrl, getMobileHeaders(seasonsUrl))
+        val seasonsResponse = client.newCall(seasonsRequest).execute().use { it.body.string() }
+        val seasonsJson = json.parseToJsonElement(seasonsResponse).jsonObject
+        val seasons = seasonsJson["data"]?.jsonObject?.get("seasons")?.jsonArray
 
-        if (subjectType != 1 && !seasons.isNullOrEmpty()) {
+        if (!seasons.isNullOrEmpty()) {
             val episodes = mutableListOf<SEpisode>()
             seasons.forEach { seasonEl ->
                 val season = seasonEl.jsonObject
