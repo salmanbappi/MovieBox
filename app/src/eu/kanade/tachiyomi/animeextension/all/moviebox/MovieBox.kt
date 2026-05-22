@@ -446,7 +446,11 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             }
         }
         val pager = data["pager"]?.obj
-        val hasMore = (pager?.get("nextPage")?.str?.isNotBlank() ?: false) || (pager?.get("hasMore")?.bool ?: false) || (animes.size >= 12)
+        val hasMore = when {
+            pager?.containsKey("hasMore") == true -> pager["hasMore"]?.bool ?: false
+            pager?.containsKey("nextPage") == true -> pager["nextPage"]?.str?.isNotBlank() ?: false
+            else -> false // No pagination data means no more pages
+        }
         return AnimesPage(animes, hasMore)
     }
 
