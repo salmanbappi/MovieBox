@@ -1,7 +1,7 @@
 ext {
     extName = 'MovieBox'
     extClass = 'eu.kanade.tachiyomi.animeextension.all.moviebox.MovieBox'
-    extVersionCode = 1042
+    extVersionCode = 1043
     baseUrl = 'https://moviebox.ph'
 }
 
