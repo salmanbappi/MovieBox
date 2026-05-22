@@ -69,26 +69,34 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         .add("Origin", "https://moviebox.ph")
         .add("Accept", "application/json")
 
-    private fun getApiHeaders(url: String, method: String = "GET", body: String? = null, token: String? = null, isDetails: Boolean = false): Headers {
+    private fun getApiHeaders(url: String, method: String = "GET", body: String? = null, token: String? = null, isDetails: Boolean = false, useMobile: Boolean = true): Headers {
         val timestamp = System.currentTimeMillis()
         val contentType = if (method == "POST") "application/json; charset=utf-8" else "application/json"
         
-        return Headers.Builder()
-            .add("user-agent", "com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; sdk_gphone64_x86_64; Build/BP22.250325.006; Cronet/133.0.6876.3)")
+        val builder = Headers.Builder()
             .add("accept", "application/json")
             .add("content-type", contentType)
             .add("connection", "keep-alive")
-            .add("x-client-token", generateXClientToken(timestamp))
-            .add("x-tr-signature", generateXTrSignature(method, "application/json", contentType, url, body, timestamp = timestamp))
-            .add("x-client-info", getClientInfo())
-            .add("x-client-status", "0")
-            .apply {
-                if (isDetails) add("x-play-mode", "2")
-                if (!token.isNullOrBlank()) {
-                    add("Authorization", "Bearer $token")
-                }
-            }
-            .build()
+            .add("X-Request-Lang", "en")
+            
+        if (useMobile) {
+            builder.add("user-agent", "com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; sdk_gphone64_x86_64; Build/BP22.250325.006; Cronet/133.0.6876.3)")
+            builder.add("x-client-token", generateXClientToken(timestamp))
+            builder.add("x-tr-signature", generateXTrSignature(method, "application/json", contentType, url, body, timestamp = timestamp))
+            builder.add("x-client-info", getClientInfo())
+            builder.add("x-client-status", "0")
+            builder.add("x-source", "mb_call_hola")
+            if (isDetails) builder.add("x-play-mode", "2") else builder.add("x-play-mode", "1")
+        } else {
+            builder.add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            builder.add("X-Source", "MB_Website")
+        }
+
+        if (!token.isNullOrBlank()) {
+            builder.add("Authorization", "Bearer $token")
+        }
+        
+        return builder.build()
     }
 
     private fun getClientInfo(): String {
@@ -99,7 +107,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             "os" to kotlinx.serialization.json.JsonPrimitive("android"),
             "os_version" to kotlinx.serialization.json.JsonPrimitive("16"),
             "device_id" to kotlinx.serialization.json.JsonPrimitive(deviceId),
-            "install_ch" to kotlinx.serialization.json.JsonPrimitive("ps"),
             "install_store" to kotlinx.serialization.json.JsonPrimitive("ps"),
             "gaid" to kotlinx.serialization.json.JsonPrimitive("d7578036d13336cc"),
             "brand" to kotlinx.serialization.json.JsonPrimitive("google"),
@@ -109,7 +116,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             "region" to kotlinx.serialization.json.JsonPrimitive("IN"),
             "timezone" to kotlinx.serialization.json.JsonPrimitive("Asia/Calcutta"),
             "sp_code" to kotlinx.serialization.json.JsonPrimitive(""),
-            "X-Play-Mode" to kotlinx.serialization.json.JsonPrimitive("2"),
+            "X-Play-Mode" to kotlinx.serialization.json.JsonPrimitive("1"),
         )).toString()
     }
 
@@ -160,13 +167,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         } else ""
 
         val bodyLength = bodyBytes?.size?.toString() ?: ""
-        return "${method.uppercase()}\n" +
-                "${accept ?: ""}\n" +
-                "${contentType ?: ""}\n" +
-                "$bodyLength\n" +
-                "$timestamp\n" +
-                "$bodyHash\n" +
-                canonicalUrl
+        return "${method.uppercase()}\n${accept ?: ""}\n${contentType ?: ""}\n$bodyLength\n$timestamp\n$bodyHash\n$canonicalUrl"
     }
 
     private fun md5ByteArray(input: ByteArray): String {
@@ -183,37 +184,40 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         timestamp: Long
     ): String {
         val canonical = buildCanonicalString(method, accept, contentType, url, body, timestamp)
-        
         val rawSecret = secretKeyDefault.removePrefix("base64Decode:")
         val secretStr = String(Base64.decode(rawSecret, Base64.DEFAULT))
         val secretBytes = Base64.decode(secretStr, Base64.DEFAULT)
-
         val mac = Mac.getInstance("HmacMD5")
         mac.init(SecretKeySpec(secretBytes, "HmacMD5"))
         val signature = mac.doFinal(canonical.toByteArray(Charsets.UTF_8))
-        val signatureB64 = Base64.encodeToString(signature, Base64.NO_WRAP)
-
-        return "$timestamp|2|$signatureB64"
+        return "$timestamp|2|${Base64.encodeToString(signature, Base64.NO_WRAP)}"
     }
 
-    private fun getPreferredHost(): String {
-        return preferences.getString(PREF_HOST_KEY, apiHosts[0]) ?: apiHosts[0]
-    }
+    private fun getPreferredHost(): String = preferences.getString(PREF_HOST_KEY, apiHosts[0]) ?: apiHosts[0]
 
-    private fun safeGetJsonWithHeaders(urlPath: String, isPost: Boolean = false, bodyData: String? = null, token: String? = null, isDetails: Boolean = false): Pair<JsonElement, Headers>? {
-        for (host in apiHosts) {
+    private fun safeGetJsonVerified(urlPath: String, isPost: Boolean = false, bodyData: String? = null, token: String? = null, isDetails: Boolean = false): Pair<JsonElement, Headers>? {
+        // Try Mobile API (api3) first, then Mirrors with Web headers
+        val hostsToTry = listOf(
+            Pair(apiHosts[0], true),  // api3 with Mobile headers
+            Pair(apiHosts[1], false), // netfilm with Web headers
+            Pair(apiHosts[2], false)  // h5-api with Web headers
+        )
+        
+        for ((host, useMobile) in hostsToTry) {
             val url = host + urlPath
             val request = if (isPost) {
                 val body = bodyData.orEmpty().toRequestBody("application/json; charset=utf-8".toMediaType())
-                POST(url, getApiHeaders(url, "POST", bodyData, token = token, isDetails = isDetails), body)
+                POST(url, getApiHeaders(url, "POST", bodyData, token = token, isDetails = isDetails, useMobile = useMobile), body)
             } else {
-                GET(url, getApiHeaders(url, token = token, isDetails = isDetails))
+                GET(url, getApiHeaders(url, token = token, isDetails = isDetails, useMobile = useMobile))
             }
             try {
                 val response = client.newCall(request).execute()
                 val body = response.body.string().trim()
                 if (body.isEmpty() || body.contains("<html", ignoreCase = true) || !body.startsWith("{")) continue
-                return Pair(json.parseToJsonElement(body), response.headers)
+                val jsonRes = json.parseToJsonElement(body)
+                if (jsonRes.obj?.get("code")?.jsonPrimitive?.contentOrNull?.toIntOrNull() != 0) continue
+                return Pair(jsonRes, response.headers)
             } catch (e: Exception) { continue }
         }
         return null
@@ -227,9 +231,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     override fun popularAnimeParse(response: Response): AnimesPage {
         val body = response.body.string()
-        val jsonRes = if (body.contains("<html", ignoreCase = true) || !body.startsWith("{")) {
-            safeGetJsonWithHeaders(response.request.url.toString().substringAfter(".com").substringAfter(".world"))?.first
-        } else json.parseToJsonElement(body)
+        val jsonRes = if (!body.startsWith("{")) safeGetJsonVerified(response.request.url.toString().substringAfter(".com").substringAfter(".world"))?.first else json.parseToJsonElement(body)
         val data = jsonRes?.obj?.get("data")?.obj ?: return AnimesPage(emptyList(), false)
         return parseSubjectListPage(data)
     }
@@ -246,14 +248,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         return GET(url, getApiHeaders(url))
     }
 
-    override fun searchAnimeParse(response: Response): AnimesPage {
-        val body = response.body.string()
-        val jsonRes = if (body.contains("<html", ignoreCase = true) || !body.startsWith("{")) {
-             safeGetJsonWithHeaders("/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=4516404531735022304&page=1&perPage=18")?.first
-        } else json.parseToJsonElement(body)
-        val data = jsonRes?.obj?.get("data")?.obj ?: return AnimesPage(emptyList(), false)
-        return parseSubjectListPage(data)
-    }
+    override fun searchAnimeParse(response: Response): AnimesPage = popularAnimeParse(response)
 
     // Details
     override fun animeDetailsRequest(anime: SAnime): Request {
@@ -265,16 +260,15 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     override fun animeDetailsParse(response: Response): SAnime {
         val xUser = response.header("x-user")
         var token = xUser?.let { runCatching { json.parseToJsonElement(it).obj?.get("token")?.str }.getOrNull() }
-        
         val body = response.body.string()
-        val jsonRes = if (body.contains("<html", ignoreCase = true) || !body.startsWith("{")) {
+        val jsonRes = if (!body.startsWith("{")) {
             val id = response.request.url.queryParameter("subjectId") ?: response.request.url.toString().substringAfterLast("/")
-            val result = safeGetJsonWithHeaders("/wefeed-mobile-bff/subject-api/get?subjectId=$id", isDetails = true)
+            val result = safeGetJsonVerified("/wefeed-mobile-bff/subject-api/get?subjectId=$id", isDetails = true)
             token = result?.second?.get("x-user")?.let { runCatching { json.parseToJsonElement(it).obj?.get("token")?.str }.getOrNull() }
             result?.first
         } else json.parseToJsonElement(body)
         
-        val data = jsonRes?.obj?.get("data")?.obj ?: throw Exception("No data")
+        val data = jsonRes?.obj?.get("data")?.obj ?: throw Exception("No metadata")
         val subject = data["subject"]?.obj ?: data
 
         return SAnime.create().apply {
@@ -302,9 +296,9 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val token = headerToken ?: (if (urlParts.size > 1) urlParts[1] else null)
         
         val body = response.body.string()
-        val jsonRes = if (body.contains("<html", ignoreCase = true) || !body.startsWith("{")) {
+        val jsonRes = if (!body.startsWith("{")) {
             val id = response.request.url.queryParameter("subjectId") ?: response.request.url.toString().substringAfterLast("/")
-            safeGetJsonWithHeaders("/wefeed-mobile-bff/subject-api/get?subjectId=$id", token = token, isDetails = true)?.first
+            safeGetJsonVerified("/wefeed-mobile-bff/subject-api/get?subjectId=$id", token = token, isDetails = true)?.first
         } else json.parseToJsonElement(body)
         
         val data = jsonRes?.obj?.get("data")?.obj ?: return emptyList()
@@ -320,7 +314,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
         for (sid in allIds) {
             val seasonsUrl = "/wefeed-mobile-bff/subject-api/season-info?subjectId=$sid"
-            val seasonsRes = safeGetJsonWithHeaders(seasonsUrl, token = token)?.first
+            val seasonsRes = safeGetJsonVerified(seasonsUrl, token = token, isDetails = true)?.first
             val seasons = seasonsRes?.obj?.get("data")?.obj?.get("seasons")?.arr
             
             seasons?.forEach { seasonEl ->
@@ -354,57 +348,35 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         )
     }
 
-    override fun videoListRequest(episode: SEpisode): Request {
-        return GET(baseUrl, headersBuilder().build())
-    }
+    override fun videoListRequest(episode: SEpisode): Request = GET(baseUrl, headersBuilder().build())
 
     override fun videoListParse(response: Response): List<Video> {
         val episodeUrl = response.request.header("X-Tachiyomi-Episode-Url") ?: response.request.url.toString()
         val parts = episodeUrl.split("|")
         if (parts.size < 3) return emptyList()
         
-        val se = parts[0]
-        val ep = parts[1]
-        val subjectIds = parts[2].split(",")
-        val token = if (parts.size > 3) parts[3] else null
-
+        val se = parts[0]; val ep = parts[1]; val subjectIds = parts[2].split(","); val token = if (parts.size > 3) parts[3] else null
         val videos = mutableListOf<Video>()
         for (sid in subjectIds) {
             val playUrl = "/wefeed-mobile-bff/subject-api/play-info?subjectId=$sid&se=$se&ep=$ep"
-            val jsonRes = safeGetJsonWithHeaders(playUrl, token = token)?.first ?: continue
-            val data = jsonRes.obj?.get("data")?.obj ?: continue
-            
-            data["streams"]?.arr?.forEach { stream ->
+            val jsonRes = safeGetJsonVerified(playUrl, token = token, isPlayback = true)?.first ?: continue
+            jsonRes.obj?.get("data")?.obj?.get("streams")?.arr?.forEach { stream ->
                 val obj = stream.obj ?: return@forEach
                 val url = obj["url"]?.str ?: return@forEach
-                val quality = (obj["resolutions"]?.str ?: "Auto") + "P"
                 val signCookie = obj["signCookie"]?.str
-                val headers = Headers.Builder()
-                    .add("Referer", "https://h5.aoneroom.com/")
-                    .add("User-Agent", "Mozilla/5.0")
-                    .apply { if (!signCookie.isNullOrBlank()) add("Cookie", signCookie) }
-                    .build()
-                videos.add(Video(url, quality, url, headers = headers))
+                val headers = Headers.Builder().add("Referer", "https://h5.aoneroom.com/").add("User-Agent", "Mozilla/5.0").apply { if (!signCookie.isNullOrBlank()) add("Cookie", signCookie) }.build()
+                videos.add(Video(url, (obj["resolutions"]?.str ?: "Auto") + "P", url, headers = headers))
             }
         }
         return videos
     }
 
     private fun parseSubjectListPage(data: JsonObject): AnimesPage {
-        val items = data["subjectList"]?.arr ?: data["items"]?.arr ?: data["subjects"]?.arr
-            ?: data["results"]?.arr?.mapNotNull { it.obj?.get("subjects")?.arr }?.flatten()
-            ?: return AnimesPage(emptyList(), false)
-
+        val items = data["subjectList"]?.arr ?: data["items"]?.arr ?: data["subjects"]?.arr ?: data["results"]?.arr?.mapNotNull { it.obj?.get("subjects")?.arr }?.flatten() ?: return AnimesPage(emptyList(), false)
         val animes = (items as List<JsonElement>).mapNotNull { item ->
-            val obj = item.obj ?: return@mapNotNull null
-            val subject = if (obj.containsKey("subject")) obj["subject"]?.obj else obj
-            if (subject == null) return@mapNotNull null
+            val subject = item.obj?.let { if (it.containsKey("subject")) it["subject"]?.obj else it } ?: return@mapNotNull null
             val id = subject["subjectId"]?.str ?: return@mapNotNull null
-            SAnime.create().apply {
-                title = subject["title"]?.str ?: ""
-                url = "/movies/$id"
-                thumbnail_url = subject["cover"]?.obj?.get("url")?.str
-            }
+            SAnime.create().apply { title = subject["title"]?.str ?: ""; url = "/movies/$id"; thumbnail_url = subject["cover"]?.obj?.get("url")?.str }
         }
         return AnimesPage(animes, data["pager"]?.obj?.get("hasMore")?.bool ?: (animes.size >= 12))
     }
@@ -415,31 +387,13 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     private val JsonElement?.bool get() = (this as? kotlinx.serialization.json.JsonPrimitive)?.booleanOrNull ?: false
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
-        ListPreference(screen.context).apply {
-            key = PREF_HOST_KEY
-            title = "API Host"
-            entries = arrayOf("Official (Aoneroom)", "Mirror (Netfilm)", "H5 API")
-            entryValues = apiHosts.toTypedArray()
-            setDefaultValue(apiHosts[0])
-            summary = "%s"
-        }.also { screen.addPreference(it) }
+        ListPreference(screen.context).apply { key = PREF_HOST_KEY; title = "API Host"; entries = arrayOf("Official (Aoneroom)", "Mirror (Netfilm)", "H5 API"); entryValues = apiHosts.toTypedArray(); setDefaultValue(apiHosts[0]); summary = "%s" }.also { screen.addPreference(it) }
     }
-
     override fun latestUpdatesRequest(page: Int): Request = throw Exception("Not used")
     override fun latestUpdatesParse(response: Response): AnimesPage = throw Exception("Not used")
     override fun getFilterList(): AnimeFilterList = AnimeFilterList(SortFilter(), TypeFilter(), RankingFilter())
-
-    private class SortFilter : AnimeFilter.Select<String>("Sort", arrayOf("Default", "Hottest", "Rating", "Latest")) {
-        fun toId() = when (state) { 1 -> "Hottest"; 2 -> "Rating"; 3 -> "Latest"; else -> "" }
-    }
-    private class TypeFilter : AnimeFilter.Select<String>("Type", arrayOf("All", "Movie", "TV Series")) {
-        fun toId() = when (state) { 1 -> "4"; 2 -> "2"; else -> "" }
-    }
-    private class RankingFilter : AnimeFilter.Select<String>("Ranking", arrayOf("None", "Trending", "Bollywood")) {
-        fun toId() = when (state) { 1 -> "4516404531735022304"; 2 -> "414907768299210008"; else -> "" }
-    }
-
-    companion object {
-        private const val PREF_HOST_KEY = "api_host"
-    }
+    private class SortFilter : AnimeFilter.Select<String>("Sort", arrayOf("Default", "Hottest", "Rating", "Latest")) { fun toId() = when (state) { 1 -> "Hottest"; 2 -> "Rating"; 3 -> "Latest"; else -> "" } }
+    private class TypeFilter : AnimeFilter.Select<String>("Type", arrayOf("All", "Movie", "TV Series")) { fun toId() = when (state) { 1 -> "4"; 2 -> "2"; else -> "" } }
+    private class RankingFilter : AnimeFilter.Select<String>("Ranking", arrayOf("None", "Trending", "Bollywood")) { fun toId() = when (state) { 1 -> "4516404531735022304"; 2 -> "414907768299210008"; else -> "" } }
+    companion object { private const val PREF_HOST_KEY = "api_host" }
 }
