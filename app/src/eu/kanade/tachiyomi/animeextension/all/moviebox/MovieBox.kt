@@ -54,6 +54,8 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         "MB_Website"
     )
 
+    private val playApiBaseUrl = "https://netfilm.world"
+
     private val blockedKeywords = listOf(
         "mma", "ufc", "wrestling", "boxing", "kickboxing", "muay thai", "rizin", "nfc", "highlights",
         "esports", "e-sports", "gaming", "gameplay", "pubg", "free fire", "dota", "league of legends", "valorant", "fifa", "fc 24", "roblox", "minecraft",
@@ -139,7 +141,8 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             safeGetJson(url)
         } else json.parseToJsonElement(body)
         
-        return parseSubjectListPage(jsonRes.jsonObject)
+        val data = jsonRes.jsonObject["data"]?.jsonObject ?: return AnimesPage(emptyList(), false)
+        return parseSubjectListPage(data)
     }
 
     // Latest: Disabled
@@ -215,7 +218,8 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             throw Exception("Received HTML. Please change 'API Host' in extension settings.")
         } else json.parseToJsonElement(body)
         
-        return parseSubjectListPage(jsonRes.jsonObject)
+        val data = jsonRes.jsonObject["data"]?.jsonObject ?: return AnimesPage(emptyList(), false)
+        return parseSubjectListPage(data)
     }
 
     // Details
