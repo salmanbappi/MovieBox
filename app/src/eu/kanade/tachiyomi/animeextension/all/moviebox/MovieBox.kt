@@ -182,7 +182,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     ): String {
         val canonical = buildCanonicalString(method, accept, contentType, url, body, timestamp)
         
-        // Correct double-decode logic
         val secretStr = String(Base64.decode(secretKeyDefault, Base64.DEFAULT))
         val secretBytes = Base64.decode(secretStr, Base64.DEFAULT)
 
@@ -200,10 +199,15 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     private fun safeGetJsonWithHeaders(urlPath: String, isPost: Boolean = false, bodyData: String? = null, token: String? = null, isDetails: Boolean = false, isPlayback: Boolean = false): Pair<JsonElement, Headers>? {
         for (host in apiHosts) {
-            val adaptivePath = if (host.contains("api3")) {
-                urlPath.replace("/wefeed-h5api-bff/detail", "/wefeed-mobile-bff/subject-api/get")
-            } else {
-                urlPath.replace("/wefeed-mobile-bff/subject-api/get", "/wefeed-h5api-bff/detail")
+            // High-Fidelity Path Translation
+            val adaptivePath = when {
+                host.contains("api3") -> urlPath
+                    .replace("/wefeed-h5api-bff/detail", "/wefeed-mobile-bff/subject-api/get")
+                    .replace("/wefeed-h5api-bff/subject/play", "/wefeed-mobile-bff/subject-api/play-info")
+                else -> urlPath
+                    .replace("/wefeed-mobile-bff/subject-api/get", "/wefeed-h5api-bff/detail")
+                    .replace("/wefeed-mobile-bff/subject-api/season-info", "/wefeed-h5api-bff/detail")
+                    .replace("/wefeed-mobile-bff/subject-api/play-info", "/wefeed-h5api-bff/subject/play")
             }
             
             val url = host + adaptivePath
@@ -270,7 +274,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     override fun animeDetailsParse(response: Response): SAnime {
         val xUser = response.header("x-user")
         var token = xUser?.let { runCatching { json.parseToJsonElement(it).obj?.get("token")?.str }.getOrNull() }
-        
         val body = response.body.string()
         val jsonRes = if (!body.trim().startsWith("{")) {
             val id = response.request.url.queryParameter("subjectId") ?: response.request.url.toString().substringAfterLast("/")
@@ -279,7 +282,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             result?.first
         } else json.parseToJsonElement(body)
         
-        val data = jsonRes?.obj?.get("data")?.obj ?: throw Exception("Details not found")
+        val data = jsonRes?.obj?.get("data")?.obj ?: throw Exception("No metadata")
         val subject = data["subject"]?.obj ?: data
 
         return SAnime.create().apply {
@@ -322,16 +325,27 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         for (sid in allIds) {
             val seasonsUrl = "/wefeed-mobile-bff/subject-api/season-info?subjectId=$sid"
             val seasonsRes = safeGetJsonWithHeaders(seasonsUrl, token = token, isDetails = true)?.first
+            
+            // Comprehensive Data Search
             val seasonsData = seasonsRes?.obj?.get("data")?.obj ?: seasonsRes?.obj ?: data
-            val resource = seasonsData["resource"]?.obj ?: seasonsData
-            val seasons = resource["seasons"]?.arr ?: seasonsData["seasons"]?.arr
+            val seasons = seasonsData["resource"]?.obj?.get("seasons")?.arr 
+                ?: seasonsData["seasons"]?.arr 
+                ?: data["resource"]?.obj?.get("seasons")?.arr
 
             seasons?.forEach { seasonEl ->
                 val season = seasonEl.obj ?: return@forEach
                 val seNum = season["se"]?.jsonPrimitive?.intOrNull ?: 1
-                val maxEp = season["maxEp"]?.jsonPrimitive?.intOrNull ?: 1
+                val allEpRaw = season["allEp"]?.str.orEmpty()
+                val maxEp = if (allEpRaw.isNotBlank()) {
+                    allEpRaw.split(",").filter { it.isNotBlank() }.size
+                } else {
+                    season["maxEp"]?.jsonPrimitive?.intOrNull ?: 1
+                }
+                
                 val epSet = seasonsMap.getOrPut(seNum) { mutableSetOf() }
-                for (i in 1..maxEp) epSet.add(i)
+                if (maxEp > 0) {
+                    for (i in 1..maxEp) epSet.add(i)
+                }
             }
         }
 
