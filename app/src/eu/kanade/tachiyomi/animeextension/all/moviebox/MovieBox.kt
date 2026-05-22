@@ -45,7 +45,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     override val id: Long = 3508466391484419848L
 
     private val apiBaseUrl = "https://h5-api.aoneroom.com"
-    private val mobileApiBaseUrl = "https://api3.aoneroom.com"
+    private val mobileApiBaseUrl = "https://h5-api.aoneroom.com"
     private val playApiBaseUrl = "https://netfilm.world"
 
     private val secretKeyDefault = "NzZpUmwwN3MweFNOOWpxbUVXQXQ3OUVCSlp1bElRSXNWNjRGWnIyTw=="
@@ -71,9 +71,10 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val timestamp = System.currentTimeMillis()
         val contentType = if (method == "POST") "application/json; charset=utf-8" else "application/json"
         return Headers.Builder()
-            .add("user-agent", "com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; Samsung; Build/BP22.250325.006; Cronet/133.0.6876.3)")
+            .add("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .add("accept", "application/json")
             .add("content-type", contentType)
+            .add("connection", "keep-alive")
             .add("x-client-token", generateXClientToken(timestamp))
             .add("x-tr-signature", generateXTrSignature(method, "application/json", contentType, url, body, timestamp = timestamp))
             .add("x-client-info", getClientInfo())
