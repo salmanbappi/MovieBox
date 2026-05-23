@@ -433,16 +433,43 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         return videos
     }
 
+    private val blockedKeywords = listOf(
+        "mma", "ufc", "wrestling", "boxing", "kickboxing", "muay thai", "rizin", "nfc", "highlights",
+        "esports", "e-sports", "gaming", "gameplay", "pubg", "free fire", "dota", "league of legends", "valorant", "fifa", "fc 24", "roblox", "minecraft",
+        "dj mix", "mixtape", "mashup", "remix", "song", "lyrics", "audio porn", "massage", "therapist",
+    )
+
+    private fun isAllowedSubject(subject: JsonObject): Boolean {
+        val title = subject["title"]?.str?.lowercase() ?: ""
+        val type = subject["subjectType"]?.jsonPrimitive?.intOrNull ?: 1
+        
+        // Block known junk keywords
+        if (blockedKeywords.any { title.contains(it) }) return false
+        
+        // Prioritize Movies (1) and Series (2), block Music (6) and unknown junk
+        if (type != 1 && type != 2 && type != 100) return false
+        
+        return true
+    }
+
     private fun parseSubjectListPage(data: JsonObject): AnimesPage {
         val items = data["subjectList"]?.arr ?: data["items"]?.arr ?: data["subjects"]?.arr ?: data["results"]?.arr?.mapNotNull { it.obj?.get("subjects")?.arr }?.flatten() ?: return AnimesPage(emptyList(), false)
         val animes = (items as List<JsonElement>).mapNotNull { item ->
             val obj = item.obj ?: return@mapNotNull null
             val subject = obj["subject"]?.obj ?: obj
+            if (!isAllowedSubject(subject)) return@mapNotNull null
+            
             val id = subject["subjectId"]?.str ?: subject["id"]?.str ?: return@mapNotNull null
+            val rating = subject["imdbRatingValue"]?.str ?: ""
+            val corner = subject["corner"]?.str ?: ""
+
             SAnime.create().apply {
                 title = subject["title"]?.str ?: ""
                 url = "/movies/$id"
                 thumbnail_url = subject["cover"]?.obj?.get("url")?.str
+                // Professional Metadata: Rating + Corner tag (e.g. "8.2 | Hindi")
+                status = if (rating.isNotBlank()) SAnime.COMPLETED else SAnime.UNKNOWN
+                author = if (corner.isNotBlank()) "[$corner] $rating" else rating
             }
         }
         val pager = data["pager"]?.obj
