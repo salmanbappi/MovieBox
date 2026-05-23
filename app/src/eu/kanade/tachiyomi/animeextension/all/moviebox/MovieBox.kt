@@ -200,17 +200,18 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     private fun safeGetJsonWithHeaders(urlPath: String, isPost: Boolean = false, bodyData: String? = null, token: String? = null, isDetails: Boolean = false, isPlayback: Boolean = false): Pair<JsonElement, Headers>? {
         for (host in apiHosts) {
-            // Adaptive Path Translation
             val adaptivePath = when {
                 host.contains("api3") -> urlPath
                     .replace("/wefeed-h5api-bff/detail", "/wefeed-mobile-bff/subject-api/get")
                     .replace("/wefeed-h5api-bff/subject/play", "/wefeed-mobile-bff/subject-api/play-info")
                     .replace("/wefeed-h5api-bff/subject/search", "/wefeed-mobile-bff/subject-api/search/v2")
+                    .replace("/wefeed-h5api-bff/subject/filter", "/wefeed-mobile-bff/subject-api/list")
                 else -> urlPath
                     .replace("/wefeed-mobile-bff/subject-api/get", "/wefeed-h5api-bff/detail")
                     .replace("/wefeed-mobile-bff/subject-api/season-info", "/wefeed-h5api-bff/detail")
                     .replace("/wefeed-mobile-bff/subject-api/play-info", "/wefeed-h5api-bff/subject/play")
                     .replace("/wefeed-mobile-bff/subject-api/search/v2", "/wefeed-h5api-bff/subject/search")
+                    .replace("/wefeed-mobile-bff/subject-api/list", "/wefeed-h5api-bff/subject/filter")
             }
             
             val url = host + adaptivePath
@@ -251,9 +252,11 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         return parseSubjectListPage(data)
     }
 
-    // Search
+    // Search & Filters
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
         val host = getPreferredHost()
+        
+        // 1. Search with keyword
         if (query.isNotBlank()) {
             val path = if (host.contains("api3")) "/wefeed-mobile-bff/subject-api/search/v2" else "/wefeed-h5api-bff/subject/search"
             val url = "$host$path"
@@ -261,11 +264,41 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             val body = bodyData.toRequestBody("application/json; charset=utf-8".toMediaType())
             return POST(url, getApiHeaders(url, "POST", bodyData), body)
         }
+        
+        // 2. Filtered Browse or Ranking
         val rankingFilter = filters.find { it is RankingFilter } as? RankingFilter
-        val rankingId = if (rankingFilter != null && rankingFilter.state > 0) rankingFilter.toId() else "4516404531735022304"
-        val path = if (host.contains("api3")) "/wefeed-mobile-bff/tab/ranking-list" else "/wefeed-h5api-bff/ranking-list/content"
-        val url = "$host$path?tabId=0&categoryType=$rankingId&page=$page&perPage=20"
-        return GET(url, getApiHeaders(url))
+        if (rankingFilter != null && rankingFilter.state > 0) {
+            val rankingId = rankingFilter.toId()
+            val path = if (host.contains("api3")) "/wefeed-mobile-bff/tab/ranking-list" else "/wefeed-h5api-bff/ranking-list/content"
+            val url = "$host$path?tabId=0&categoryType=$rankingId&page=$page&perPage=20"
+            return GET(url, getApiHeaders(url))
+        }
+
+        // 3. Official Discovery Filters
+        val typeFilter = filters.find { it is TypeFilter } as? TypeFilter
+        val languageFilter = filters.find { it is LanguageFilter } as? LanguageFilter
+        val genreFilter = filters.find { it is GenreFilter } as? GenreFilter
+        val yearFilter = filters.find { it is YearFilter } as? YearFilter
+        val countryFilter = filters.find { it is CountryFilter } as? CountryFilter
+        val sortFilter = filters.find { it is SortFilter } as? SortFilter
+        
+        val bodyMap = mutableMapOf<String, JsonElement>(
+            "page" to kotlinx.serialization.json.JsonPrimitive(page),
+            "perPage" to kotlinx.serialization.json.JsonPrimitive(20),
+            "keyword" to kotlinx.serialization.json.JsonPrimitive(""),
+            "sort" to kotlinx.serialization.json.JsonPrimitive(sortFilter?.toId() ?: "ForYou"),
+            "channelId" to kotlinx.serialization.json.JsonPrimitive(typeFilter?.toId() ?: "1"),
+            "classify" to kotlinx.serialization.json.JsonPrimitive(languageFilter?.toId() ?: "All"),
+            "genre" to kotlinx.serialization.json.JsonPrimitive(genreFilter?.toId() ?: "All"),
+            "year" to kotlinx.serialization.json.JsonPrimitive(yearFilter?.toId() ?: "All"),
+            "country" to kotlinx.serialization.json.JsonPrimitive(countryFilter?.toId() ?: "All"),
+        )
+        
+        val path = if (host.contains("api3")) "/wefeed-mobile-bff/subject-api/list" else "/wefeed-h5api-bff/subject/filter"
+        val url = "$host$path"
+        val bodyData = JsonObject(bodyMap).toString()
+        val body = bodyData.toRequestBody("application/json; charset=utf-8".toMediaType())
+        return POST(url, getApiHeaders(url, "POST", bodyData), body)
     }
 
     override fun searchAnimeParse(response: Response): AnimesPage {
@@ -300,6 +333,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     override fun animeDetailsParse(response: Response): SAnime {
         val xUser = response.header("x-user")
         var token = xUser?.let { runCatching { json.parseToJsonElement(it).obj?.get("token")?.str }.getOrNull() }
+        
         val body = response.body.string()
         val jsonRes = if (!body.trim().startsWith("{")) {
             val id = response.request.url.queryParameter("subjectId") ?: response.request.url.toString().substringAfterLast("/")
@@ -308,7 +342,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             result?.first
         } else json.parseToJsonElement(body)
         
-        val data = jsonRes?.obj?.get("data")?.obj ?: throw Exception("No metadata")
+        val data = jsonRes?.obj?.get("data")?.obj ?: throw Exception("Details not found")
         val subject = data["subject"]?.obj ?: data
 
         return SAnime.create().apply {
@@ -413,7 +447,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                 val res = obj["resolutions"]?.str ?: "Auto"
                 val signCookie = obj["signCookie"]?.str
                 val streamId = obj["id"]?.str ?: ""
-                val headers = Headers.Builder().add("Referer", "https://h5.aoneroom.com/").add("User-Agent", "Mozilla/5.0").apply { if (!signCookie.isNullOrBlank()) add("Cookie", signCookie) }.build()
+                val headers = Headers.Builder().add("Referer", "https://h5.aoneroom.com/").add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36").apply { if (!signCookie.isNullOrBlank()) add("Cookie", signCookie) }.build()
                 
                 val subtitleTracks = mutableListOf<Track>()
                 if (streamId.isNotBlank()) {
@@ -442,13 +476,8 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     private fun isAllowedSubject(subject: JsonObject): Boolean {
         val title = subject["title"]?.str?.lowercase() ?: ""
         val type = subject["subjectType"]?.jsonPrimitive?.intOrNull ?: 1
-        
-        // Block known junk keywords
         if (blockedKeywords.any { title.contains(it) }) return false
-        
-        // Prioritize Movies (1) and Series (2), block Music (6) and unknown junk
         if (type != 1 && type != 2 && type != 100) return false
-        
         return true
     }
 
@@ -458,16 +487,13 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             val obj = item.obj ?: return@mapNotNull null
             val subject = obj["subject"]?.obj ?: obj
             if (!isAllowedSubject(subject)) return@mapNotNull null
-            
             val id = subject["subjectId"]?.str ?: subject["id"]?.str ?: return@mapNotNull null
             val rating = subject["imdbRatingValue"]?.str ?: ""
             val corner = subject["corner"]?.str ?: ""
-
             SAnime.create().apply {
                 title = subject["title"]?.str ?: ""
                 url = "/movies/$id"
                 thumbnail_url = subject["cover"]?.obj?.get("url")?.str
-                // Professional Metadata: Rating + Corner tag (e.g. "8.2 | Hindi")
                 status = if (rating.isNotBlank()) SAnime.COMPLETED else SAnime.UNKNOWN
                 author = if (corner.isNotBlank()) "[$corner] $rating" else rating
             }
@@ -475,13 +501,11 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val pager = data["pager"]?.obj
         val currentPage = pager?.get("page")?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 1
         val totalCount = pager?.get("totalCount")?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
-        
         val hasMore = (animes.isNotEmpty()) && (
             (totalCount > (currentPage * 20)) ||
             (pager?.get("hasMore")?.jsonPrimitive?.booleanOrNull == true) ||
             (pager?.get("nextPage")?.jsonPrimitive?.contentOrNull?.toIntOrNull()?.let { it > currentPage && it != 0 } ?: false)
         )
-            
         return AnimesPage(animes, hasMore)
     }
 
@@ -495,9 +519,101 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     }
     override fun latestUpdatesRequest(page: Int): Request = throw Exception("Not used")
     override fun latestUpdatesParse(response: Response): AnimesPage = throw Exception("Not used")
-    override fun getFilterList(): AnimeFilterList = AnimeFilterList(SortFilter(), TypeFilter(), RankingFilter())
-    private class SortFilter : AnimeFilter.Select<String>("Sort", arrayOf("Default", "Hottest", "Rating", "Latest")) { fun toId() = when (state) { 1 -> "Hottest"; 2 -> "Rating"; 3 -> "Latest"; else -> "" } }
-    private class TypeFilter : AnimeFilter.Select<String>("Type", arrayOf("All", "Movie", "TV Series")) { fun toId() = when (state) { 1 -> "4"; 2 -> "2"; else -> "" } }
-    private class RankingFilter : AnimeFilter.Select<String>("Ranking", arrayOf("None", "Trending", "Bollywood")) { fun toId() = when (state) { 1 -> "4516404531735022304"; 2 -> "414907768299210008"; else -> "" } }
-    companion object { private const val PREF_HOST_KEY = "api_host" }
+    override fun getFilterList(): AnimeFilterList = AnimeFilterList(
+        SortFilter(),
+        TypeFilter(),
+        LanguageFilter(),
+        GenreFilter(),
+        YearFilter(),
+        CountryFilter(),
+        AnimeFilter.Separator(),
+        RankingFilter()
+    )
+
+    private class SortFilter : AnimeFilter.Select<String>("Sort", arrayOf("Default", "ForYou", "Hottest", "Rating", "Latest")) {
+        fun toId() = when (state) {
+            1 -> "ForYou"
+            2 -> "Hottest"
+            3 -> "Rating"
+            4 -> "Latest"
+            else -> "ForYou"
+        }
+    }
+
+    private class TypeFilter : AnimeFilter.Select<String>("Type", arrayOf("Movie", "TV Series", "Animation")) {
+        fun toId() = when (state) {
+            0 -> "4"
+            1 -> "2"
+            2 -> "ANIMATION"
+            else -> "1"
+        }
+    }
+
+    private class LanguageFilter : AnimeFilter.Select<String>("Language/Dub", arrayOf(
+        "All", "English Dub", "Hindi Dub", "Bangla dub", "French Dub", "Urdu Dub", "Tamil Dub", "Telugu Dub", "Punjabi Dub", "Malayalam Dub", "Kannada Dub", "Arabic Dub", "Arabic Sub", "Tagalog Dub", "Indonesian Dub", "Russian Dub", "Kurdish Sub", "Spanish Dub", "Spanish Sub", "SpanishLatam Dub"
+    )) {
+        fun toId() = if (state == 0) "All" else values[state]
+    }
+
+    private class GenreFilter : AnimeFilter.Select<String>("Genre", arrayOf(
+        "All", "Action", "Adventure", "Animation", "Biography", "Comedy", "Crime", "Documentary", "Drama", "Family", "Fantasy", "Film-Noir", "Game-Show", "History", "Horror", "Music", "Musical", "Mystery", "News", "Reality-TV", "Romance", "Sci-Fi", "Short", "Sport", "Talk-Show", "Thriller", "War", "Western", "Other"
+    )) {
+        fun toId() = if (state == 0) "All" else values[state]
+    }
+
+    private class YearFilter : AnimeFilter.Select<String>("Year", arrayOf("All") + (2026 downTo 2020).map { it.toString() }.toTypedArray() + arrayOf("2010s", "2000s", "1990s", "1980s", "Other")) {
+        fun toId() = if (state == 0) "All" else values[state]
+    }
+
+    private class CountryFilter : AnimeFilter.Select<String>("Country", arrayOf(
+        "All", "United States", "United Kingdom", "Korea", "Japan", "Bangladesh", "China", "Egypt", "France", "Germany", "India", "Indonesia", "Iraq", "Italy", "Ivory Coast", "Kenya", "Lebanon", "Mexico", "Morocco", "Nigeria", "Pakistan", "Philippines", "Russia", "Saudi Arabia", "South Africa", "Spain", "Syria", "Thailand", "Malaysia", "Turkey", "Other"
+    )) {
+        fun toId() = if (state == 0) "All" else values[state]
+    }
+
+    private class RankingFilter : AnimeFilter.Select<String>("Ranking List (Global)", arrayOf(
+        "None",
+        "Trending Now",
+        "Cinema",
+        "Bollywood",
+        "Hollywood",
+        "South Indian",
+        "Hot Short TV",
+        "Trending Bengali Movies",
+        "Trending Bengali TV",
+        "Asian",
+        "Top Series This Week",
+        "Anime",
+        "Korean Drama",
+        "Chinese Drama",
+        "Indian Drama",
+        "Reality-TV",
+        "Western TV",
+        "Turkish Drama"
+    )) {
+        fun toId() = when (state) {
+            1 -> "8610422883619422240"
+            2 -> "5692654647815587592"
+            3 -> "414907768299210008"
+            4 -> "8019599703232971616"
+            5 -> "3859721901924910512"
+            6 -> "5740267679764693592"
+            7 -> "5837669637445565960"
+            8 -> "735765054104261208"
+            9 -> "5429170738815291968"
+            10 -> "5606549574572819920"
+            11 -> "8434602210994128512"
+            12 -> "7878715743607948784"
+            13 -> "8788126208987989488"
+            14 -> "4903182713986896328"
+            15 -> "1255898847918934600"
+            16 -> "3910636007619709856"
+            17 -> "5177200225164885656"
+            else -> ""
+        }
+    }
+
+    companion object {
+        private const val PREF_HOST_KEY = "api_host"
+    }
 }
