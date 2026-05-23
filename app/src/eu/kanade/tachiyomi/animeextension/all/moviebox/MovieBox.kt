@@ -449,15 +449,11 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val currentPage = pager?.get("page")?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 1
         val totalCount = pager?.get("totalCount")?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
         
-        val hasMore = when {
-            totalCount > 0 -> (currentPage * 20) < totalCount
-            pager?.containsKey("hasMore") == true -> pager["hasMore"]?.jsonPrimitive?.booleanOrNull == true
-            pager?.containsKey("nextPage") == true -> {
-                val next = pager["nextPage"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
-                next > currentPage && next != 0
-            }
-            else -> animes.size >= 12
-        } && animes.isNotEmpty()
+        val hasMore = (animes.isNotEmpty()) && (
+            (totalCount > (currentPage * 20)) ||
+            (pager?.get("hasMore")?.jsonPrimitive?.booleanOrNull == true) ||
+            (pager?.get("nextPage")?.jsonPrimitive?.contentOrNull?.toIntOrNull()?.let { it > currentPage && it != 0 } ?: false)
+        )
             
         return AnimesPage(animes, hasMore)
     }
