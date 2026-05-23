@@ -446,11 +446,18 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             }
         }
         val pager = data["pager"]?.obj
+        val currentPage = pager?.get("page")?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 1
+        val totalCount = pager?.get("totalCount")?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
+        
         val hasMore = when {
-            pager?.containsKey("hasMore") == true -> pager["hasMore"]?.bool == true
-            pager?.containsKey("nextPage") == true -> pager["nextPage"]?.str?.let { it.isNotBlank() && it != "0" } ?: false
-            else -> false
-        } && animes.isNotEmpty() // Safety: stop if no items were found on this page
+            totalCount > 0 -> (currentPage * 20) < totalCount
+            pager?.containsKey("hasMore") == true -> pager["hasMore"]?.jsonPrimitive?.booleanOrNull == true
+            pager?.containsKey("nextPage") == true -> {
+                val next = pager["nextPage"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
+                next > currentPage && next != 0
+            }
+            else -> animes.size >= 12
+        } && animes.isNotEmpty()
             
         return AnimesPage(animes, hasMore)
     }
