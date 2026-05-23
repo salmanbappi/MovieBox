@@ -282,14 +282,15 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val countryFilter = filters.find { it is CountryFilter } as? CountryFilter
         val sortFilter = filters.find { it is SortFilter } as? SortFilter
         
+        val typeId = typeFilter?.toId() ?: "0"
         val bodyMap = mutableMapOf<String, JsonElement>(
             "page" to kotlinx.serialization.json.JsonPrimitive(page),
             "perPage" to kotlinx.serialization.json.JsonPrimitive(20),
             "keyword" to kotlinx.serialization.json.JsonPrimitive(""),
             "sort" to kotlinx.serialization.json.JsonPrimitive(sortFilter?.toId() ?: "ForYou"),
-            "channelId" to kotlinx.serialization.json.JsonPrimitive(typeFilter?.toId() ?: "1"),
+            "channelId" to kotlinx.serialization.json.JsonPrimitive(if (typeId == "ANIMATION") "0" else typeId),
             "classify" to kotlinx.serialization.json.JsonPrimitive(languageFilter?.toId() ?: "All"),
-            "genre" to kotlinx.serialization.json.JsonPrimitive(genreFilter?.toId() ?: "All"),
+            "genre" to kotlinx.serialization.json.JsonPrimitive(if (typeId == "ANIMATION") "Animation" else (genreFilter?.toId() ?: "All")),
             "year" to kotlinx.serialization.json.JsonPrimitive(yearFilter?.toId() ?: "All"),
             "country" to kotlinx.serialization.json.JsonPrimitive(countryFilter?.toId() ?: "All"),
         )
@@ -540,12 +541,12 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         }
     }
 
-    private class TypeFilter : AnimeFilter.Select<String>("Type", arrayOf("Movie", "TV Series", "Animation")) {
+    private class TypeFilter : AnimeFilter.Select<String>("Type", arrayOf("All", "Movie", "TV Series", "Animation")) {
         fun toId() = when (state) {
-            0 -> "4"
-            1 -> "2"
-            2 -> "ANIMATION"
-            else -> "1"
+            1 -> "1" // Movie
+            2 -> "2" // TV Series
+            3 -> "ANIMATION"
+            else -> "0"
         }
     }
 
