@@ -372,13 +372,12 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         } else json.parseToJsonElement(body)
         
         val data = jsonRes?.obj?.get("data")?.obj ?: return emptyList()
-        val mainSubjectId = data["subject"]?.obj?.get("subjectId")?.str 
-            ?: data["subjectId"]?.str ?: return emptyList()
+        val mainSubjectId = data["subject"]?.obj?.get("subjectId")?.str ?: data["subjectId"]?.str ?: return emptyList()
         val detailPath = data["subject"]?.obj?.get("detailPath")?.str ?: mainSubjectId
-        
         val allIds = mutableListOf<Pair<String, String>>()
         allIds.add(Pair(mainSubjectId, data["subject"]?.obj?.get("lanName")?.str ?: "Original"))
-        data["subject"]?.obj?.get("dubs")?.arr?.forEach { 
+        val dubsArray = data["subject"]?.obj?.get("dubs")?.arr ?: data["dubs"]?.arr
+        dubsArray?.forEach { 
             val sid = it.obj?.get("subjectId")?.str
             val lang = it.obj?.get("lanName")?.str ?: "Unknown"
             if (sid != null && allIds.none { p -> p.first == sid }) allIds.add(Pair(sid, lang))
