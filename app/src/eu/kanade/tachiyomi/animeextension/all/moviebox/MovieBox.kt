@@ -336,12 +336,20 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         var token = xUser?.let { runCatching { json.parseToJsonElement(it).obj?.get("token")?.str }.getOrNull() }
         
         val body = response.body.string()
-        val jsonRes = if (!body.trim().startsWith("{")) {
+        var jsonRes: JsonElement? = null
+        if (!body.trim().startsWith("{")) {
             val id = response.request.url.queryParameter("subjectId") ?: response.request.url.toString().substringAfterLast("/")
-            val result = safeGetJsonWithHeaders("/wefeed-mobile-bff/subject-api/get?subjectId=$id", isDetails = true)
-            token = result?.second?.get("x-user")?.let { runCatching { json.parseToJsonElement(it).obj?.get("token")?.str }.getOrNull() }
-            result?.first
-        } else json.parseToJsonElement(body)
+            
+            for (attempt in 1..3) {
+                val result = safeGetJsonWithHeaders("/wefeed-mobile-bff/subject-api/get?subjectId=$id", isDetails = true)
+                token = result?.second?.get("x-user")?.let { runCatching { json.parseToJsonElement(it).obj?.get("token")?.str }.getOrNull() }
+                jsonRes = result?.first
+                if (jsonRes != null) break
+                Thread.sleep(500)
+            }
+        } else {
+            jsonRes = json.parseToJsonElement(body)
+        }
         
         val data = jsonRes?.obj?.get("data")?.obj ?: throw Exception("Details not found")
         val subject = data["subject"]?.obj ?: data
@@ -366,10 +374,17 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val token = headerToken ?: (if (urlParts.size > 1) urlParts[1] else null)
         
         val body = response.body.string()
-        val jsonRes = if (!body.trim().startsWith("{")) {
+        var jsonRes: JsonElement? = null
+        if (!body.trim().startsWith("{")) {
             val id = response.request.url.queryParameter("subjectId") ?: response.request.url.toString().substringAfterLast("/")
-            safeGetJsonWithHeaders("/wefeed-mobile-bff/subject-api/get?subjectId=$id", token = token, isDetails = true)?.first
-        } else json.parseToJsonElement(body)
+            for (attempt in 1..3) {
+                jsonRes = safeGetJsonWithHeaders("/wefeed-mobile-bff/subject-api/get?subjectId=$id", token = token, isDetails = true)?.first
+                if (jsonRes != null) break
+                Thread.sleep(500)
+            }
+        } else {
+            jsonRes = json.parseToJsonElement(body)
+        }
         
         val data = jsonRes?.obj?.get("data")?.obj ?: return emptyList()
         val mainSubjectId = data["subject"]?.obj?.get("subjectId")?.str ?: data["subjectId"]?.str ?: return emptyList()
@@ -440,7 +455,16 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         val videos = mutableListOf<Video>()
         for ((sid, lang) in subjectIds) {
             val playUrl = "/wefeed-mobile-bff/subject-api/play-info?subjectId=$sid&se=$se&ep=$ep"
-            val jsonRes = safeGetJsonWithHeaders(playUrl, token = token, isPlayback = true)?.first ?: continue
+            
+            var jsonRes: JsonElement? = null
+            for (attempt in 1..3) {
+                jsonRes = safeGetJsonWithHeaders(playUrl, token = token, isPlayback = true)?.first
+                if (jsonRes != null) break
+                Thread.sleep(500) // Small delay between retries
+            }
+            
+            if (jsonRes == null) continue
+            
             jsonRes.obj?.get("data")?.obj?.get("streams")?.arr?.forEach { stream ->
                 val obj = stream.obj ?: return@forEach
                 val url = obj["url"]?.str ?: return@forEach
