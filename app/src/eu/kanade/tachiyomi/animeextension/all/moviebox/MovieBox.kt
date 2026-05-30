@@ -462,46 +462,13 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                 }
 
                 val langTag = lang.replace("dub", "").replace("dubbed", "").trim()
-                if (url.contains(".m3u8")) {
-                    videos.addAll(extractM3u8(url, langTag, headers, subtitleTracks))
-                } else {
-                    res.split(",").forEach { r -> videos.add(Video(url, "${r.trim()}P ($langTag)", url, headers = headers, subtitleTracks = subtitleTracks)) }
-                }
+                videos.add(Video(url, "DASH - $res ($langTag)", url, headers = headers, subtitleTracks = subtitleTracks))
             }
         }
         return videos
     }
 
-    private fun extractM3u8(url: String, langTag: String, headers: Headers, subtitleTracks: List<Track>): List<Video> {
-        val videos = mutableListOf<Video>()
-        try {
-            val response = client.newCall(GET(url, headers)).execute()
-            if (!response.isSuccessful) {
-                videos.add(Video(url, "Auto ($langTag)", url, headers = headers, subtitleTracks = subtitleTracks))
-                return videos
-            }
-            val playlist = response.body.string()
-            if (!playlist.contains("#EXT-X-STREAM-INF")) {
-                videos.add(Video(url, "Auto ($langTag)", url, headers = headers, subtitleTracks = subtitleTracks))
-                return videos
-            }
-            playlist.lines().forEachIndexed { index, line ->
-                if (line.startsWith("#EXT-X-STREAM-INF")) {
-                    val resMatch = Regex("""RESOLUTION=\d+x(\d+)""").find(line)
-                    val resolution = resMatch?.groupValues?.get(1)?.let { "${it}p" } ?: "Auto"
-                    val nextLine = playlist.lines().getOrNull(index + 1)?.trim()
-                    if (nextLine != null && nextLine.isNotEmpty() && !nextLine.startsWith("#")) {
-                        val videoUrl = if (nextLine.startsWith("http")) nextLine else url.toHttpUrlOrNull()?.resolve(nextLine)?.toString() ?: nextLine
-                        videos.add(Video(videoUrl, "$resolution ($langTag)", videoUrl, headers = headers, subtitleTracks = subtitleTracks))
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            videos.add(Video(url, "Auto ($langTag)", url, headers = headers, subtitleTracks = subtitleTracks))
-        }
-        if (videos.isEmpty()) videos.add(Video(url, "Auto ($langTag)", url, headers = headers, subtitleTracks = subtitleTracks))
-        return videos
-    }
+
 
     private val blockedKeywords = listOf(
         "mma", "ufc", "wrestling", "boxing", "kickboxing", "muay thai", "rizin", "nfc", "highlights",
@@ -551,26 +518,15 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
     private val JsonElement?.bool get() = (this as? kotlinx.serialization.json.JsonPrimitive)?.booleanOrNull ?: false
 
     override fun List<Video>.sort(): List<Video> {
-        val quality = preferences.getString(PREF_QUALITY_KEY, PREF_QUALITY_DEFAULT)!!
         val audio = preferences.getString(PREF_AUDIO_KEY, PREF_AUDIO_DEFAULT)!!
 
         return this.sortedWith(
             compareByDescending<Video> { it.quality.contains(audio, ignoreCase = true) }
-                .thenByDescending { it.quality.contains(quality, ignoreCase = true) }
         )
     }
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         ListPreference(screen.context).apply { key = PREF_HOST_KEY; title = "API Host"; entries = arrayOf("Official (Aoneroom)", "Mirror (Netfilm)", "H5 API"); entryValues = apiHosts.toTypedArray(); setDefaultValue(apiHosts[0]); summary = "%s" }.also { screen.addPreference(it) }
-        
-        ListPreference(screen.context).apply {
-            key = PREF_QUALITY_KEY
-            title = PREF_QUALITY_TITLE
-            entries = PREF_QUALITY_ENTRIES
-            entryValues = PREF_QUALITY_VALUES
-            setDefaultValue(PREF_QUALITY_DEFAULT)
-            summary = "%s"
-        }.also { screen.addPreference(it) }
 
         ListPreference(screen.context).apply {
             key = PREF_AUDIO_KEY
@@ -679,12 +635,6 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
 
     companion object {
         private const val PREF_HOST_KEY = "api_host"
-
-        private const val PREF_QUALITY_KEY = "preferred_quality"
-        private const val PREF_QUALITY_TITLE = "Preferred Quality"
-        private const val PREF_QUALITY_DEFAULT = "1080"
-        private val PREF_QUALITY_ENTRIES = arrayOf("1080p", "720p", "480p", "360p")
-        private val PREF_QUALITY_VALUES = arrayOf("1080", "720", "480", "360")
 
         private const val PREF_AUDIO_KEY = "preferred_audio"
         private const val PREF_AUDIO_TITLE = "Preferred Audio (Dub/Sub)"
