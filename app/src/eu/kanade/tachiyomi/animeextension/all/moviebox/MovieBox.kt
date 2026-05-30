@@ -509,7 +509,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                         // Ensure absolute BaseURL for Data URI manifest
                         if (!dashContent!!.contains("<BaseURL>", ignoreCase = true)) {
                             val baseUrlValue = url.substringBeforeLast("/") + "/"
-                            dashContent = dashContent!!.replace(">", ">\n\t<BaseURL>$baseUrlValue</BaseURL>", limit = 1)
+                            dashContent = dashContent!!.replaceFirst(">", ">\n\t<BaseURL>$baseUrlValue</BaseURL>")
                         }
                     }
                 }
