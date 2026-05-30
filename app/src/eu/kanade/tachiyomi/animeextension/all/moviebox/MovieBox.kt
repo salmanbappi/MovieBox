@@ -462,9 +462,44 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                 }
 
                 val langTag = lang.replace("dub", "").replace("dubbed", "").trim()
-                res.split(",").forEach { r -> videos.add(Video(url, "${r.trim()}P ($langTag)", url, headers = headers, subtitleTracks = subtitleTracks)) }
+                if (url.contains(".m3u8")) {
+                    videos.addAll(extractM3u8(url, langTag, headers, subtitleTracks))
+                } else {
+                    res.split(",").forEach { r -> videos.add(Video(url, "${r.trim()}P ($langTag)", url, headers = headers, subtitleTracks = subtitleTracks)) }
+                }
             }
         }
+        return videos
+    }
+
+    private fun extractM3u8(url: String, langTag: String, headers: Headers, subtitleTracks: List<Track>): List<Video> {
+        val videos = mutableListOf<Video>()
+        try {
+            val response = client.newCall(GET(url, headers)).execute()
+            if (!response.isSuccessful) {
+                videos.add(Video(url, "Auto ($langTag)", url, headers = headers, subtitleTracks = subtitleTracks))
+                return videos
+            }
+            val playlist = response.body.string()
+            if (!playlist.contains("#EXT-X-STREAM-INF")) {
+                videos.add(Video(url, "Auto ($langTag)", url, headers = headers, subtitleTracks = subtitleTracks))
+                return videos
+            }
+            playlist.lines().forEachIndexed { index, line ->
+                if (line.startsWith("#EXT-X-STREAM-INF")) {
+                    val resMatch = Regex("""RESOLUTION=\d+x(\d+)""").find(line)
+                    val resolution = resMatch?.groupValues?.get(1)?.let { "${it}p" } ?: "Auto"
+                    val nextLine = playlist.lines().getOrNull(index + 1)?.trim()
+                    if (nextLine != null && nextLine.isNotEmpty() && !nextLine.startsWith("#")) {
+                        val videoUrl = if (nextLine.startsWith("http")) nextLine else url.toHttpUrlOrNull()?.resolve(nextLine)?.toString() ?: nextLine
+                        videos.add(Video(videoUrl, "$resolution ($langTag)", videoUrl, headers = headers, subtitleTracks = subtitleTracks))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            videos.add(Video(url, "Auto ($langTag)", url, headers = headers, subtitleTracks = subtitleTracks))
+        }
+        if (videos.isEmpty()) videos.add(Video(url, "Auto ($langTag)", url, headers = headers, subtitleTracks = subtitleTracks))
         return videos
     }
 
