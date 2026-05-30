@@ -444,10 +444,14 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             jsonRes.obj?.get("data")?.obj?.get("streams")?.arr?.forEach { stream ->
                 val obj = stream.obj ?: return@forEach
                 val url = obj["url"]?.str ?: return@forEach
-                val res = obj["resolutions"]?.str ?: "Auto"
+                val resolutions = obj["resolutions"]?.str ?: "Auto"
                 val signCookie = obj["signCookie"]?.str
                 val streamId = obj["id"]?.str ?: ""
-                val headers = Headers.Builder().add("Referer", "https://h5.aoneroom.com/").add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36").apply { if (!signCookie.isNullOrBlank()) add("Cookie", signCookie) }.build()
+                val headers = Headers.Builder()
+                    .add("Referer", "https://h5.aoneroom.com/")
+                    .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .apply { if (!signCookie.isNullOrBlank()) add("Cookie", signCookie) }
+                    .build()
                 
                 val subtitleTracks = mutableListOf<Track>()
                 if (streamId.isNotBlank()) {
@@ -461,7 +465,13 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                 }
 
                 val langTag = lang.replace("dub", "").replace("dubbed", "").trim()
-                videos.add(Video(url, "DASH - $res ($langTag)", url, headers = headers, subtitleTracks = subtitleTracks))
+                
+                resolutions.split(",").forEach { res ->
+                    val quality = res.trim()
+                    if (quality.isNotBlank()) {
+                        videos.add(Video(url, "DASH - ${quality}p ($langTag)", url, headers = headers, subtitleTracks = subtitleTracks))
+                    }
+                }
             }
         }
         return videos
