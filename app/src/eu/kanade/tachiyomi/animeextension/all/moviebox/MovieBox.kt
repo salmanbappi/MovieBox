@@ -491,16 +491,35 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
                 val langTag = lang.replace("dub", "").replace("dubbed", "").trim()
                 
                 val isDash = url.contains(".mpd", ignoreCase = true)
-                
+                var dashContent: String? = null
                 if (isDash) {
                     videos.add(Video(url, "DASH - Auto ($langTag)", url, headers = headers, subtitleTracks = subtitleTracks))
+                    for (attempt in 1..3) {
+                        try {
+                            val mpdRequest = GET(url, headers)
+                            val mpdResponse = client.newCall(mpdRequest).execute()
+                            dashContent = mpdResponse.body.string()
+                            if (!dashContent.isNullOrBlank() && dashContent!!.contains("<MPD", ignoreCase = true)) break
+                        } catch (e: Exception) {
+                            Thread.sleep(500)
+                        }
+                    }
+                    
+                    if (dashContent != null) {
+                        // Ensure absolute BaseURL for Data URI manifest
+                        if (!dashContent!!.contains("<BaseURL>", ignoreCase = true)) {
+                            val baseUrlValue = url.substringBeforeLast("/") + "/"
+                            dashContent = dashContent!!.replace(">", ">\n\t<BaseURL>$baseUrlValue</BaseURL>", limit = 1)
+                        }
+                    }
                 }
 
                 resolutions.split(",").forEach { res ->
                     val quality = res.trim()
                     if (quality.isNotBlank()) {
-                        val videoUrl = if (isDash) {
-                            if (url.contains("?")) "$url&resolution=$quality" else "$url?resolution=$quality"
+                        val videoUrl = if (isDash && dashContent != null) {
+                            val filteredMpd = filterDASH(dashContent!!, quality)
+                            "data:application/dash+xml;base64," + Base64.encodeToString(filteredMpd.toByteArray(), Base64.NO_WRAP)
                         } else {
                             url
                         }
@@ -510,6 +529,32 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             }
         }
         return videos
+    }
+
+    private fun filterDASH(mpd: String, resolution: String): String {
+        try {
+            val videoSetRegex = Regex("""(<AdaptationSet[^>]*contentType="video"[^>]*>.*?</AdaptationSet>)""", RegexOption.DOT_MATCHES_ALL)
+            val videoSetMatch = videoSetRegex.find(mpd) ?: return mpd
+            
+            val videoSet = videoSetMatch.groupValues[1]
+            // More specific representation regex to avoid partial matches
+            val repRegex = Regex("""(<Representation\s+[^>]*>.*?</Representation>)""", RegexOption.DOT_MATCHES_ALL)
+            val reps = repRegex.findAll(videoSet)
+            
+            var newVideoSet = videoSet
+            var found = false
+            for (rep in reps) {
+                if (rep.value.contains("height=\"$resolution\"")) {
+                    found = true
+                } else {
+                    newVideoSet = newVideoSet.replace(rep.value, "")
+                }
+            }
+            
+            return if (found) mpd.replace(videoSet, newVideoSet) else mpd
+        } catch (e: Exception) {
+            return mpd
+        }
     }
 
     private val blockedKeywords = listOf(
