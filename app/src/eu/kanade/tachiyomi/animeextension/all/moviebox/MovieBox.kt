@@ -405,7 +405,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
             }
         }
 
-        val idsString = allIds.joinToString(",") { "${it.first}:${it.second}" }
+        val idsString = allIds.joinToString("~~") { "${it.first}:${it.second}" }
         seasonsMap.forEach { (seNum, epSet) ->
             epSet.sorted().forEach { epNum ->
                 episodes.add(SEpisode.create().apply {
@@ -437,7 +437,7 @@ class MovieBox : ConfigurableAnimeSource, AnimeHttpSource() {
         if (parts.size < 4) return emptyList()
         
         val se = parts[0]; val ep = parts[1]; val idsString = parts[2]; val token = if (parts.size > 4) parts[4] else null
-        val subjectIds = idsString.split(",").mapNotNull { val p = it.split(":"); if (p.size == 2) Pair(p[0], p[1]) else null }
+        val subjectIds = idsString.split("~~").mapNotNull { val p = it.split(":", limit = 2); if (p.size == 2) Pair(p[0], p[1]) else null }
 
         val videos = mutableListOf<Video>()
         for ((sid, lang) in subjectIds) {
